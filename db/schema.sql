@@ -420,7 +420,68 @@ CREATE TABLE IF NOT EXISTS grant_cycle_closeout_projection (
 );
 
 -- ALTER existing tables for Phase 4
-ALTER TABLE invoices_projection 
+ALTER TABLE invoices_projection
   ADD COLUMN IF NOT EXISTS oasis_export_batch_id UUID,
   ADD COLUMN IF NOT EXISTS last_event_ingested_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_event_id UUID;
+
+-- ============================================
+-- PHASE 5: API LAYER
+-- ============================================
+
+-- API Keys for VetOS/ShelterOS/WVDA Integration
+CREATE TABLE IF NOT EXISTS api_keys (
+  api_key_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  api_key_hash VARCHAR(64) NOT NULL UNIQUE,  -- SHA-256 hash of the actual key
+  client_type VARCHAR(20) NOT NULL,  -- 'CLINIC' | 'GRANTEE' | 'ADMIN'
+  client_id UUID NOT NULL,  -- References clinic_id, grantee_id, or admin_user_id
+  grant_cycle_id UUID NOT NULL,
+  permissions JSONB NOT NULL DEFAULT '[]',
+  description VARCHAR(255),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  revoked_by UUID,
+  last_used_at TIMESTAMPTZ,
+  CONSTRAINT valid_client_type CHECK (client_type IN ('CLINIC', 'GRANTEE', 'ADMIN'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(api_key_hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_client ON api_keys(client_type, client_id);
+
+-- Webhook Subscriptions for outbound notifications
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+  subscription_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_type VARCHAR(20) NOT NULL,
+  client_id UUID NOT NULL,
+  webhook_url TEXT NOT NULL,
+  event_types JSONB NOT NULL,  -- Array of event types to subscribe to
+  secret_hash VARCHAR(64) NOT NULL,  -- For HMAC signature verification
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  last_delivery_at TIMESTAMPTZ,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT valid_webhook_client_type CHECK (client_type IN ('CLINIC', 'GRANTEE', 'ADMIN'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_subs_client ON webhook_subscriptions(client_type, client_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_subs_active ON webhook_subscriptions(is_active) WHERE is_active = TRUE;
+
+-- Webhook Delivery Log (for retry and audit)
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  subscription_id UUID NOT NULL REFERENCES webhook_subscriptions(subscription_id),
+  event_type VARCHAR(50) NOT NULL,
+  payload JSONB NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  status VARCHAR(20) NOT NULL,  -- 'PENDING' | 'DELIVERED' | 'FAILED' | 'ABANDONED'
+  http_status INTEGER,
+  response_body TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  delivered_at TIMESTAMPTZ,
+  next_retry_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status) WHERE status IN ('PENDING', 'FAILED');
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_subscription ON webhook_deliveries(subscription_id);
