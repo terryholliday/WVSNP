@@ -19,7 +19,7 @@ ClinicId, AdjustmentId, ExportBatchId
           ? first 32 hex chars ? formatted as UUID (8-4-4-4-12)
 - Reason: Stable singleton per (grantCycleId, countyCode) without global search
 
-### 2. Claim Fingerprint (DE-DUPE ONLY — NOT AN IDENTITY)
+### 2. Claim Fingerprint (DE-DUPE ONLY - NOT AN IDENTITY)
 - Type: SHA-256 hash (64 hex chars)
 - Formula: SHA-256(voucherId + ":" + clinicId + ":" + procedureCode + ":" + dateOfService + ":rabies=" + 0|1)
 - Constraint: UNIQUE(grant_cycle_id, clinic_id, claim_fingerprint) on claims_projection

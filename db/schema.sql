@@ -191,7 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_tentative_expiry
   WHERE status = 'TENTATIVE';
 
 CREATE TABLE IF NOT EXISTS allocators_projection (
-  allocator_id VARCHAR(64) PRIMARY KEY,  -- SHA-256 hash
+  allocator_id UUID PRIMARY KEY,  -- Hash-derived UUID (see IDENTITY_EXCEPTIONS.md)
   grant_cycle_id UUID NOT NULL,
   county_code VARCHAR(20) NOT NULL,
   next_sequence BIGINT NOT NULL DEFAULT 1,
