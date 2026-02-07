@@ -34,7 +34,7 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
     const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
     const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
     await pool.query(schemaSql);
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query('TRUNCATE event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache CASCADE');

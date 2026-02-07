@@ -2,7 +2,7 @@ import { Pool, PoolClient } from 'pg';
 import * as crypto from 'crypto';
 import { EventStore, DomainEvent } from '../event-store';
 import { IdempotencyService } from './idempotency-service';
-import { ActorId, MoneyCents, Money } from '../domain-types';
+import { ActorId, MoneyCents, Money, GrantCycleCloseout } from '../domain-types';
 import {
   createInitialCycleCloseoutState,
   applyCycleCloseoutEvent,
@@ -122,10 +122,12 @@ export class CloseoutService {
       const status = allPassed ? 'PASSED' : 'FAILED';
 
       // Emit GRANT_CYCLE_CLOSEOUT_PREFLIGHT_COMPLETED
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const preflightEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSEOUT_PREFLIGHT_COMPLETED',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -180,10 +182,12 @@ export class CloseoutService {
       }
 
       // Emit GRANT_CYCLE_CLOSEOUT_STARTED
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const startedEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSEOUT_STARTED',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -321,10 +325,12 @@ export class CloseoutService {
       };
 
       // Emit GRANT_CYCLE_CLOSEOUT_RECONCILED
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const reconciledEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSEOUT_RECONCILED',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -379,12 +385,13 @@ export class CloseoutService {
       await client.query('BEGIN');
 
       // Rebuild state to check if close is allowed
+      const closeoutAggId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
       const eventRows = await client.query(`
         SELECT event_id, event_type, event_data, ingested_at
         FROM event_log
         WHERE aggregate_id = $1 AND aggregate_type = 'GRANT_CYCLE_CLOSEOUT'
         ORDER BY ingested_at ASC, event_id ASC
-      `, [request.grantCycleId]);
+      `, [closeoutAggId]);
 
       const state = createInitialCycleCloseoutState(request.grantCycleId);
       for (const row of eventRows.rows) {
@@ -404,10 +411,12 @@ export class CloseoutService {
       const finalBalance = state.financialSummary?.unspentCents || Money.fromBigInt(0n);
 
       // Emit GRANT_CYCLE_CLOSED
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const closedEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSED',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -447,10 +456,12 @@ export class CloseoutService {
     try {
       await client.query('BEGIN');
 
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const holdEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSEOUT_AUDIT_HOLD',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -490,10 +501,12 @@ export class CloseoutService {
     try {
       await client.query('BEGIN');
 
+      const closeoutAggregateId = GrantCycleCloseout.createAggregateId(request.grantCycleId);
+
       const resolvedEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'GRANT_CYCLE_CLOSEOUT',
-        aggregateId: request.grantCycleId,
+        aggregateId: closeoutAggregateId,
         eventType: 'GRANT_CYCLE_CLOSEOUT_AUDIT_RESOLVED',
         eventData: {
           grantCycleId: request.grantCycleId,
@@ -522,12 +535,13 @@ export class CloseoutService {
   }
 
   private async updateCloseoutProjection(client: PoolClient, grantCycleId: string): Promise<void> {
+    const closeoutAggId = GrantCycleCloseout.createAggregateId(grantCycleId);
     const eventRows = await client.query(`
       SELECT event_id, event_type, event_data, ingested_at
       FROM event_log
       WHERE aggregate_id = $1 AND aggregate_type = 'GRANT_CYCLE_CLOSEOUT'
       ORDER BY ingested_at ASC, event_id ASC
-    `, [grantCycleId]);
+    `, [closeoutAggId]);
 
     const state = createInitialCycleCloseoutState(grantCycleId);
     for (const row of eventRows.rows) {

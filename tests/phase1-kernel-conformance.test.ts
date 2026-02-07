@@ -144,7 +144,7 @@ describe('Phase 1 Kernel Conformance', () => {
     if (!check.rows[0].al) {
       throw new Error('MISSING_SCHEMA: artifact_log not found. Run schema.sql against wvsnp_test first.');
     }
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query('BEGIN');

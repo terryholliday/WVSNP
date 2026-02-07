@@ -62,9 +62,6 @@ export class ClaimService {
       }
 
       // FIX 8: ClaimId must be UUIDv4 (client-generated or server fallback)
-      if (!UUID_V4_REGEX.test(request.grantCycleId)) {
-        throw new Error('GRANT_CYCLE_ID_INVALID');
-      }
       const claimId = (request.claimId ?? crypto.randomUUID()) as ClaimId;
       if (!UUID_V4_REGEX.test(claimId)) {
         throw new Error('CLAIM_ID_INVALID');

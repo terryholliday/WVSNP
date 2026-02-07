@@ -30,6 +30,12 @@ Standard Aggregate IDs (No Exception):
 - Formula: SHA-256(grantCycleId + ":" + periodStart + ":" + periodEnd + ":" + sorted(invoiceIds))
 - FORBIDDEN: Same restrictions as Claim Fingerprint
 
+### 4. Grant Cycle Closeout Aggregate ID
+- Type: Deterministic hash-derived UUID
+- Formula: SHA-256("GrantCycleCloseout:" + grantCycleId)
+          → first 32 hex chars → formatted as UUID (8-4-4-4-12)
+- Reason: Stable singleton per grantCycleId; aggregate_id column is UUID but grantCycleId is VARCHAR(20)
+
 ## CRITICAL RULE
 EventStore.newEventId() produces UUIDv7 → for EVENT IDs ONLY.
 crypto.randomUUID() produces UUIDv4 → for AGGREGATE IDs.

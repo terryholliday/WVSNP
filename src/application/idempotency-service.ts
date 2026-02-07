@@ -26,8 +26,8 @@ export class IdempotencyService {
 
     const sql = `
       INSERT INTO idempotency_cache (
-        idempotency_key, operation_type, request_hash, status, expires_at
-      ) VALUES ($1, $2, $3, 'PROCESSING', $4)
+        idempotency_key, operation_type, request_hash, status, expires_at, recorded_at
+      ) VALUES ($1, $2, $3, 'PROCESSING', $4, clock_timestamp())
       ON CONFLICT (idempotency_key) DO UPDATE SET
         status = CASE
           WHEN idempotency_cache.status = 'COMPLETED' THEN 'COMPLETED'

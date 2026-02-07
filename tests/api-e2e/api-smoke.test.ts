@@ -3,35 +3,57 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { Server } from 'http';
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5433', 10),
-  database: process.env.DB_NAME || 'wvsnp_test',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
-
+let pool: Pool;
 let server: Server;
 let baseUrl: string;
+let apiPool: { query: Pool['query'] };
 let closeApiPool: (() => Promise<void>) | undefined;
 
 describe('API E2E smoke', () => {
   beforeAll(async () => {
     const dbHost = process.env.DB_HOST || 'localhost';
     const dbPort = parseInt(process.env.DB_PORT || '5433', 10);
-    const dbName = process.env.DB_NAME || 'wvsnp_test';
+    const dbName = process.env.DB_NAME || 'wvsnp_api_e2e';
     const dbUser = process.env.DB_USER || 'postgres';
     const dbPassword = process.env.DB_PASSWORD || 'postgres';
     process.env.DATABASE_URL = `postgresql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`;
 
+    // Create database if it doesn't exist (connect to postgres first)
+    const adminPool = new Pool({
+      host: dbHost, port: dbPort, database: 'postgres', user: dbUser, password: dbPassword,
+    });
+    try {
+      await adminPool.query(`CREATE DATABASE "${dbName}"`);
+    } catch (error: any) {
+      // Ignore "database already exists" error
+      if (!error.message.includes('already exists')) {
+        throw error;
+      }
+    }
+    await adminPool.end();
+
+    // Apply schema FIRST, before starting API server, to avoid pool contention
+    const setupPool = new Pool({
+      host: dbHost, port: dbPort, database: dbName, user: dbUser, password: dbPassword,
+    });
     const schemaPath = join(__dirname, '../../db/schema.sql');
     const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
     const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
-    await pool.query(schemaSql);
+    await setupPool.query(schemaSql);
+    await setupPool.end();
 
+    // Now start API server with clean schema
     const serverModule = await import('../../src/api/server');
     const app = serverModule.default;
     closeApiPool = serverModule.closeApiPool;
+    apiPool = serverModule.apiPool;
+
+    // Use the API server's own pool for test queries so there is only one
+    // pool holding locks — this eliminates cross-pool deadlocks.
+    pool = apiPool as Pool;
+
+    // Use the API server's pool directly for all operations
+    // No separate cleanup pool to avoid cross-suite interference
 
     server = app.listen(0);
     const address = server.address();
@@ -46,25 +68,50 @@ describe('API E2E smoke', () => {
     if (!schema.rows[0].event_log) {
       throw new Error('MISSING_SCHEMA: run npm run setup:db against wvsnp_test before running api e2e');
     }
-  });
+  }, 60_000);
 
   beforeEach(async () => {
-    // Use DELETE instead of TRUNCATE to avoid ACCESS EXCLUSIVE locks that
-    // deadlock with the API server's pool connections on the same tables.
-    await pool.query('DELETE FROM idempotency_cache');
-    await pool.query('DELETE FROM vouchers_projection');
-    await pool.query('DELETE FROM event_log');
-  });
+    // Use TRUNCATE with retry mechanism to handle transient lock contention
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1s
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await pool.query(
+          'TRUNCATE event_log, vouchers_projection, idempotency_cache CASCADE'
+        );
+        return; // Success
+      } catch (error: any) {
+        if (attempt === maxRetries) {
+          throw error; // Re-throw on final attempt
+        }
+        
+        // If it's a lock contention error, wait and retry
+        if (error.message.includes('deadlock') || error.message.includes('lock')) {
+          await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
+          continue;
+        }
+        
+        // For other errors, don't retry
+        throw error;
+      }
+    }
+  }, 30_000);
 
   afterAll(async () => {
+    // Close API server first
     await new Promise<void>((resolve, reject) => {
       if (!server) return resolve();
       server.close((err) => (err ? reject(err) : resolve()));
     });
+    
+    // Then close the API pool
     if (closeApiPool) {
       await closeApiPool();
     }
-    await pool.end();
+    
+    // Wait a moment for connections to fully release
+    await new Promise(resolve => setTimeout(resolve, 1000));
   });
 
   test('health endpoint responds', async () => {

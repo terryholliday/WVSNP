@@ -20,7 +20,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/wvsnp_gms';
 
 // Initialize database and services
-const pool = new Pool({ connectionString: DATABASE_URL });
+export const apiPool = new Pool({ connectionString: DATABASE_URL });
+const pool = apiPool;
 const eventStore = new EventStore(pool);
 const idempotency = new IdempotencyService(pool);
 

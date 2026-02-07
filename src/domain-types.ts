@@ -158,6 +158,22 @@ export const Claim = {
   },
 };
 
+export type GrantCycleCloseoutId = string & { readonly brand: 'GrantCycleCloseoutId' };
+
+export const GrantCycleCloseout = {
+  /**
+   * Deterministic hash-derived UUID for closeout aggregate.
+   * Formula: SHA-256("GrantCycleCloseout:" + grantCycleId) → first 32 hex → UUID format
+   */
+  createAggregateId: (grantCycleId: string): GrantCycleCloseoutId => {
+    const hash = crypto.createHash('sha256')
+      .update(`GrantCycleCloseout:${grantCycleId}`, 'utf8')
+      .digest('hex');
+    const uuid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    return uuid as GrantCycleCloseoutId;
+  },
+};
+
 export const Allocator = {
   createId: (grantCycleId: string, countyCode: string): AllocatorId => {
     const hash = crypto.createHash('sha256')

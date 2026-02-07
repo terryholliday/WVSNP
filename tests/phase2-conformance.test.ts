@@ -33,8 +33,9 @@ describe('Phase 2 Conformance Tests', () => {
     const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
     const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
     await pool.query(schemaSql);
+  }, 30_000);
 
-    // Ensure clean state
+  beforeEach(async () => {
     await pool.query('TRUNCATE event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache CASCADE');
   });
 
@@ -196,7 +197,7 @@ describe('Phase 2 Conformance Tests', () => {
 
     await pool.query(
       'INSERT INTO vouchers_projection (voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp, tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at, rebuilt_at, watermark_ingested_at, watermark_event_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
-      [voucherId, grantId, null, null, 'TENTATIVE', 50000, false, new Date(Date.now() - 3600000), new Date(Date.now() + 3600000), null, null, null, null, new Date(), new Date(), EventStore.newEventId()]
+      [voucherId, grantId, 'TEST-TENTATIVE-001', null, 'TENTATIVE', 50000, false, new Date(Date.now() - 3600000), new Date(Date.now() + 3600000), new Date(), null, null, null, new Date(), new Date(), EventStore.newEventId()]
     );
 
     const before = await pool.query('SELECT status FROM vouchers_projection WHERE voucher_id = $1', [voucherId]);

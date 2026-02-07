@@ -33,7 +33,7 @@ describe('Phase 4 v5.2 Conformance Tests', () => {
     const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
     const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
     await pool.query(schemaSql);
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query('TRUNCATE event_log, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache CASCADE');
@@ -58,7 +58,7 @@ describe('Phase 4 v5.2 Conformance Tests', () => {
    * Same parameters = return existing batch
    */
   test('TEST 2: Export idempotency - generation returns existing batch', async () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026-T2';
     const periodStart = new Date('2026-01-01');
     const periodEnd = new Date('2026-01-31');
     const watermarkIngestedAt = new Date('2026-01-31T23:59:59Z');
@@ -158,7 +158,7 @@ describe('Phase 4 v5.2 Conformance Tests', () => {
    * Failed preflight blocks closeout start
    */
   test('TEST 9: Closeout preflight failure blocks start', async () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026-T9';
     const actorId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
 
