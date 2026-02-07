@@ -479,11 +479,13 @@ describe('Phase 1 Kernel Conformance', () => {
         event_data: { applicationId: appId2, granteeId: granteeId2, cycleId: 'FY2026' },
       });
 
-      // Replay: fetch all events from genesis
+      // Replay: fetch only the events we just inserted (scoped by aggregate_id)
       const allEvents = await pool.query(
         `SELECT event_id, aggregate_id, event_type, event_data, ingested_at
          FROM event_log
-         ORDER BY ingested_at ASC, event_id ASC`
+         WHERE aggregate_id = ANY($1)
+         ORDER BY ingested_at ASC, event_id ASC`,
+        [[appId1, appId2]]
       );
 
       expect(allEvents.rows).toHaveLength(2);
@@ -517,10 +519,14 @@ describe('Phase 1 Kernel Conformance', () => {
         if (i < 4) await sleep(5);
       }
 
+      // Scope pagination to only our 5 events
+      const scopeFilter = `AND event_id = ANY(ARRAY['${eventIds.join("','")}'::uuid])`;
+
       // Page 1: fetch first 2 from ZERO watermark
       const page1 = await pool.query(
         `SELECT event_id, ingested_at FROM event_log
-         WHERE (ingested_at > $1) OR (ingested_at = $1 AND event_id > $2)
+         WHERE ((ingested_at > $1) OR (ingested_at = $1 AND event_id > $2))
+         ${scopeFilter}
          ORDER BY ingested_at ASC, event_id ASC
          LIMIT 2`,
         [new Date(0).toISOString(), '00000000-0000-0000-0000-000000000000']
@@ -531,7 +537,8 @@ describe('Phase 1 Kernel Conformance', () => {
       const wm1 = page1.rows[1];
       const page2 = await pool.query(
         `SELECT event_id, ingested_at FROM event_log
-         WHERE (ingested_at > $1) OR (ingested_at = $1 AND event_id > $2)
+         WHERE ((ingested_at > $1) OR (ingested_at = $1 AND event_id > $2))
+         ${scopeFilter}
          ORDER BY ingested_at ASC, event_id ASC
          LIMIT 2`,
         [wm1.ingested_at, wm1.event_id]
@@ -542,7 +549,8 @@ describe('Phase 1 Kernel Conformance', () => {
       const wm2 = page2.rows[1];
       const page3 = await pool.query(
         `SELECT event_id, ingested_at FROM event_log
-         WHERE (ingested_at > $1) OR (ingested_at = $1 AND event_id > $2)
+         WHERE ((ingested_at > $1) OR (ingested_at = $1 AND event_id > $2))
+         ${scopeFilter}
          ORDER BY ingested_at ASC, event_id ASC
          LIMIT 2`,
         [wm2.ingested_at, wm2.event_id]
@@ -577,20 +585,26 @@ describe('Phase 1 Kernel Conformance', () => {
       });
 
       // Use the event itself as the watermark — should return 0 results (exclusive)
+      // Scope to only this event to avoid seeing committed rows from other suites
       const result = await pool.query(
         `SELECT event_id FROM event_log
-         WHERE (ingested_at > $1) OR (ingested_at = $1 AND event_id > $2)
+         WHERE ((ingested_at > $1) OR (ingested_at = $1 AND event_id > $2))
+         AND event_id = $3
          ORDER BY ingested_at ASC, event_id ASC
          LIMIT 10`,
-        [row.ingested_at, row.event_id]
+        [row.ingested_at, row.event_id, eid]
       );
       expect(result.rows).toHaveLength(0);
     });
 
     test('ZERO watermark fetches all events from genesis', async () => {
+      const insertedIds: string[] = [];
       for (let i = 0; i < 3; i++) {
         const appId = uuidv4();
+        const eid = uuidv7();
+        insertedIds.push(eid);
         await insertEvent(pool, {
+          event_id: eid,
           aggregate_id: appId,
           event_type: 'APPLICATION_STARTED',
           event_data: { applicationId: appId, granteeId: uuidv4(), cycleId: 'FY2026' },
@@ -600,9 +614,10 @@ describe('Phase 1 Kernel Conformance', () => {
 
       const result = await pool.query(
         `SELECT event_id FROM event_log
-         WHERE (ingested_at > $1) OR (ingested_at = $1 AND event_id > $2)
+         WHERE ((ingested_at > $1) OR (ingested_at = $1 AND event_id > $2))
+         AND event_id = ANY($3)
          ORDER BY ingested_at ASC, event_id ASC`,
-        [new Date(0).toISOString(), '00000000-0000-0000-0000-000000000000']
+        [new Date(0).toISOString(), '00000000-0000-0000-0000-000000000000', insertedIds]
       );
       expect(result.rows).toHaveLength(3);
     });

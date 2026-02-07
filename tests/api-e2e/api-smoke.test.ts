@@ -49,9 +49,11 @@ describe('API E2E smoke', () => {
   });
 
   beforeEach(async () => {
-    await pool.query(
-      'TRUNCATE event_log, vouchers_projection, idempotency_cache CASCADE'
-    );
+    // Use DELETE instead of TRUNCATE to avoid ACCESS EXCLUSIVE locks that
+    // deadlock with the API server's pool connections on the same tables.
+    await pool.query('DELETE FROM idempotency_cache');
+    await pool.query('DELETE FROM vouchers_projection');
+    await pool.query('DELETE FROM event_log');
   });
 
   afterAll(async () => {
