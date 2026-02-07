@@ -24,25 +24,40 @@ export class IdempotencyService {
   ): Promise<IdempotencyStatus> {
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
-    const sql = `
-      INSERT INTO idempotency_cache (
-        idempotency_key, operation_type, request_hash, status, expires_at
-      ) VALUES ($1, $2, $3, 'PROCESSING', $4)
-      ON CONFLICT (idempotency_key) DO UPDATE SET
-        status = CASE
-          WHEN idempotency_cache.status = 'COMPLETED' THEN 'COMPLETED'
-          WHEN idempotency_cache.status = 'FAILED' THEN 'NEW'::varchar(20)
-          ELSE 'PROCESSING'
-        END,
-        recorded_at = CASE WHEN idempotency_cache.status = 'COMPLETED' THEN idempotency_cache.recorded_at ELSE clock_timestamp() END
-      RETURNING status, (xmax = 0) AS inserted
-    `;
+    // Step 1: Lock any existing row to avoid deadlocks from speculative
+    //         INSERT ... ON CONFLICT DO UPDATE.
+    const existing = await client.query(
+      'SELECT status FROM idempotency_cache WHERE idempotency_key = $1 FOR UPDATE',
+      [key]
+    );
 
-    const result = await client.query(sql, [key, operationType, requestHash, expiresAt]);
-    if (result.rows[0].inserted) {
-      return 'NEW';
+    if (existing.rows.length > 0) {
+      const currentStatus = existing.rows[0].status as IdempotencyStatus;
+
+      if (currentStatus === 'COMPLETED') {
+        return 'COMPLETED';
+      }
+
+      if (currentStatus === 'PROCESSING') {
+        return 'PROCESSING';
+      }
+
+      // FAILED → allow retry: reset to PROCESSING and return NEW
+      if (currentStatus === 'FAILED') {
+        await client.query(
+          "UPDATE idempotency_cache SET status = 'PROCESSING', recorded_at = clock_timestamp() WHERE idempotency_key = $1",
+          [key]
+        );
+        return 'NEW';
+      }
     }
-    return result.rows[0].status as IdempotencyStatus;
+
+    // Step 2: No existing row → insert fresh reservation
+    await client.query(
+      "INSERT INTO idempotency_cache (idempotency_key, operation_type, request_hash, status, expires_at) VALUES ($1, $2, $3, 'PROCESSING', $4)",
+      [key, operationType, requestHash, expiresAt]
+    );
+    return 'NEW';
   }
 
   async recordResult(client: PoolClient, key: string, response: any): Promise<void> {
