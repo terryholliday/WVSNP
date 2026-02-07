@@ -154,12 +154,23 @@ function computeWatermark(lastEvent: DomainEvent | null, rebuiltAt: Date): Proje
   };
 }
 
-export async function rebuildAllProjections(pool: Pool): Promise<void> {
+export interface RebuildResult {
+  rebuiltAt: string;
+  eventsReplayed: number;
+  projectionsRebuilt: string[];
+  watermark: {
+    ingestedAt: string;
+    eventId: string;
+  };
+}
+
+export async function rebuildAllProjections(pool: Pool): Promise<RebuildResult> {
   const store = new EventStore(pool);
   const applications = new Map<string, ApplicationState>();
 
   let watermark = Watermark.ZERO;
   let lastEvent: DomainEvent | null = null;
+  let eventsReplayed = 0;
 
   while (true) {
     const events = await store.fetchSince(watermark, 1000);
@@ -171,6 +182,7 @@ export async function rebuildAllProjections(pool: Pool): Promise<void> {
       ensurePhase1Event(event);
       applyApplicationEvent(applications, event);
       lastEvent = event;
+      eventsReplayed += 1;
     }
 
     watermark = Watermark.from(events[events.length - 1]);
@@ -191,4 +203,14 @@ export async function rebuildAllProjections(pool: Pool): Promise<void> {
   } finally {
     client.release();
   }
+
+  return {
+    rebuiltAt: rebuiltAt.toISOString(),
+    eventsReplayed,
+    projectionsRebuilt: ['applications_projection'],
+    watermark: {
+      ingestedAt: projectionWatermark.watermarkIngestedAt.toISOString(),
+      eventId: projectionWatermark.watermarkEventId,
+    },
+  };
 }

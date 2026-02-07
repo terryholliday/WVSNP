@@ -190,9 +190,12 @@ WHERE table_schema = 'public'
 -- Expected: No rows (all projections must use *_projection suffix)
 
 -- ============================================
--- CONFORMANCE CHECKLIST
+-- CONFORMANCE CHECKLIST (v5.2)
 -- ============================================
--- [ ] Claim deterministic ID (SHA-256 hash)
+-- [ ] ClaimId is client-generated UUIDv4 (NOT SHA-256 hash)
+-- [ ] ClaimFingerprint is SHA-256 (de-dupe only, NOT an identity)
+-- [ ] No projection immutability triggers (only event_log/artifact_log)
+-- [ ] approved_event_id populated for all approved claims
 -- [ ] VET_CLINIC_* event naming
 -- [ ] Clinic eligibility enforcement (ACTIVE + VALID license)
 -- [ ] Claim date validation (voucher + grant period + deadline)
@@ -207,3 +210,4 @@ WHERE table_schema = 'public'
 -- [ ] LIRP co-pay forbidden
 -- [ ] Required artifacts on claims
 -- [ ] *_projection table naming (not *_writemodel)
+-- [ ] No Number() on money fields (BigInt only)

@@ -4,6 +4,7 @@
 -- ============================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================
 -- EVENT LOG (Canonical, Append-Only)
@@ -25,7 +26,7 @@ CREATE TABLE IF NOT EXISTS event_log (
   ingested_at TIMESTAMPTZ NOT NULL,  -- Server time (NO DEFAULT - trigger enforced)
 
   -- TENANCY
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   correlation_id UUID NOT NULL,
   causation_id UUID,
   actor_id UUID NOT NULL,
@@ -122,7 +123,7 @@ FOR EACH ROW EXECUTE FUNCTION prevent_artifact_mutation();
 CREATE TABLE IF NOT EXISTS applications_projection (
   application_id UUID PRIMARY KEY,
   grantee_id UUID NOT NULL,
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
 
   organization_name VARCHAR(255),
   organization_type VARCHAR(50),
@@ -147,7 +148,7 @@ CREATE TABLE IF NOT EXISTS applications_projection (
 -- ============================================
 CREATE TABLE IF NOT EXISTS grant_balances_projection (
   grant_id UUID NOT NULL,
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   bucket_type VARCHAR(10) NOT NULL,  -- 'GENERAL' or 'LIRP'
   awarded_cents BIGINT NOT NULL,
   available_cents BIGINT NOT NULL,
@@ -191,8 +192,8 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_tentative_expiry
   WHERE status = 'TENTATIVE';
 
 CREATE TABLE IF NOT EXISTS allocators_projection (
-  allocator_id VARCHAR(64) PRIMARY KEY,  -- SHA-256 hash
-  grant_cycle_id UUID NOT NULL,
+  allocator_id UUID PRIMARY KEY,  -- Hash-derived UUID (first 32 hex chars of SHA-256)
+  grant_cycle_id VARCHAR(20) NOT NULL,
   county_code VARCHAR(20) NOT NULL,
   next_sequence BIGINT NOT NULL DEFAULT 1,
   rebuilt_at TIMESTAMPTZ NOT NULL,
@@ -243,7 +244,7 @@ CREATE TABLE IF NOT EXISTS vet_clinics_projection (
 CREATE TABLE IF NOT EXISTS claims_projection (
   claim_id UUID PRIMARY KEY,  -- UUIDv4 (LAW 3.1)
   claim_fingerprint VARCHAR(64) NOT NULL,  -- SHA-256 for de-duplication only
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   voucher_id UUID NOT NULL,
   clinic_id UUID NOT NULL,
   procedure_code VARCHAR(50) NOT NULL,
@@ -277,7 +278,7 @@ CREATE INDEX IF NOT EXISTS idx_claims_status
 CREATE TABLE IF NOT EXISTS invoices_projection (
   invoice_id UUID PRIMARY KEY,
   clinic_id UUID NOT NULL,
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   invoice_period_start DATE NOT NULL,
   invoice_period_end DATE NOT NULL,
   total_amount_cents BIGINT NOT NULL,
@@ -319,7 +320,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_invoice_id
 CREATE TABLE IF NOT EXISTS invoice_adjustments_projection (
   adjustment_id UUID PRIMARY KEY,
   source_invoice_id UUID NOT NULL,
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   clinic_id UUID,
   target_invoice_id UUID,
   amount_cents BIGINT NOT NULL,
@@ -344,7 +345,7 @@ CREATE INDEX IF NOT EXISTS idx_adjustments_target_invoice
 -- OASIS Export Batches
 CREATE TABLE IF NOT EXISTS oasis_export_batches_projection (
   export_batch_id UUID PRIMARY KEY,
-  grant_cycle_id UUID NOT NULL,
+  grant_cycle_id VARCHAR(20) NOT NULL,
   batch_code VARCHAR(30) NOT NULL,
   batch_fingerprint VARCHAR(64) NOT NULL,
   period_start DATE NOT NULL,
@@ -396,7 +397,7 @@ CREATE INDEX IF NOT EXISTS idx_batch_items_invoice
 
 -- Grant Cycle Closeout
 CREATE TABLE IF NOT EXISTS grant_cycle_closeout_projection (
-  grant_cycle_id UUID PRIMARY KEY,
+  grant_cycle_id VARCHAR(20) PRIMARY KEY,
   closeout_status VARCHAR(20) NOT NULL DEFAULT 'NOT_STARTED',
   preflight_status VARCHAR(10),
   preflight_checks JSONB,

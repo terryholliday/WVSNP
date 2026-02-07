@@ -1,0 +1,66 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e5]:
+        - generic [ref=e7]:
+          - heading "West Virginia Spay/Neuter Program" [level=1] [ref=e8]
+          - paragraph [ref=e9]: Grantee Application Portal
+        - paragraph [ref=e12]: WVDA Grant Administration
+    - main [ref=e13]:
+      - generic [ref=e14]:
+        - heading "Apply for WVSNP Grant Funding" [level=2] [ref=e15]
+        - paragraph [ref=e16]: Animal shelters, rescues, and humane societies can apply for grant allocations to provide spay/neuter services in their communities
+        - generic [ref=e17]:
+          - img [ref=e19]
+          - heading "Grantee Organizations" [level=3] [ref=e21]
+          - paragraph [ref=e22]: This portal is for 501(c)(3) animal welfare organizations applying to administer WVSNP grant funds in West Virginia counties.
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - img [ref=e27]
+          - heading "Apply for Grant Allocation" [level=3] [ref=e29]
+          - paragraph [ref=e30]: Submit your organization's application to receive WVSNP grant funds for your service area.
+          - link "Start Application" [ref=e31] [cursor=pointer]:
+            - /url: /apply
+            - text: Start Application
+            - img [ref=e32]
+        - generic [ref=e34]:
+          - img [ref=e37]
+          - heading "Check Application Status" [level=3] [ref=e39]
+          - paragraph [ref=e40]: Track your grant application progress and view your allocation status.
+          - link "Check Status" [ref=e41] [cursor=pointer]:
+            - /url: /status
+            - text: Check Status
+            - img [ref=e42]
+      - generic [ref=e44]:
+        - heading "Grantee Reporting" [level=3] [ref=e45]
+        - paragraph [ref=e46]: "Current grantees: Submit your quarterly reports and track voucher issuance."
+        - link "Access Reporting Portal" [ref=e47] [cursor=pointer]:
+          - /url: /reporting
+          - text: Access Reporting Portal
+          - img [ref=e48]
+      - generic [ref=e51]:
+        - generic [ref=e52]:
+          - heading "Eligibility Requirements" [level=4] [ref=e53]
+          - list [ref=e54]:
+            - listitem [ref=e55]: • 501(c)(3) animal welfare organization
+            - listitem [ref=e56]: • Serve West Virginia communities
+            - listitem [ref=e57]: • Demonstrated capacity to administer grant funds
+            - listitem [ref=e58]: • Established relationships with veterinary clinics
+            - listitem [ref=e59]: • Ability to track and report outcomes
+        - generic [ref=e60]:
+          - heading "Need Help?" [level=4] [ref=e61]
+          - generic [ref=e62]:
+            - paragraph [ref=e63]: "WVDA Grant Administration: (304) 123-4567"
+            - paragraph [ref=e64]: "Email: wvda-grants@wv.gov"
+            - paragraph [ref=e65]: "Hours: Monday-Friday, 9 AM - 5 PM EST"
+    - contentinfo [ref=e66]:
+      - generic [ref=e68]:
+        - paragraph [ref=e69]: © 2026 West Virginia Department of Agriculture. WVSNP Grantee Portal.
+        - paragraph [ref=e70]: Grant funding subject to availability and program requirements.
+  - button "Open Next.js Dev Tools" [ref=e76] [cursor=pointer]:
+    - img [ref=e77]
+  - alert [ref=e80]
+```

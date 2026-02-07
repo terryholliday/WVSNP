@@ -43,6 +43,16 @@ export class GrantService {
 
       const grantCycleId = await this.getGrantCycleId(client, request.grantId);
 
+      // Phase 4: Check if grant cycle is closed (closeout lock)
+      const cycleClosed = await client.query(
+        `SELECT COUNT(*) as count FROM event_log 
+         WHERE event_type = 'GRANT_CYCLE_CLOSED' AND grant_cycle_id = $1`,
+        [grantCycleId]
+      );
+      if (parseInt(cycleClosed.rows[0].count) > 0) {
+        throw new Error('GRANT_CYCLE_CLOSED');
+      }
+
       // Phase 4: Check if grant period has ended (deadline enforcement)
       const periodEnded = await client.query(
         `SELECT COUNT(*) as count FROM event_log 
@@ -76,7 +86,8 @@ export class GrantService {
       // Allocate code
       const allocatorRow = await client.query('SELECT next_sequence FROM allocators_projection WHERE allocator_id = $1', [allocatorId]);
       const sequence = allocatorRow.rows[0].next_sequence;
-      const voucherCode = generateVoucherCode('FY2026', 'COUNTY', sequence, '2026');
+      const fiscalYear = grantCycleId.replace('FY', '');
+      const voucherCode = generateVoucherCode(grantCycleId, 'COUNTY', sequence, fiscalYear);
 
       // Emit events
       const events: Omit<DomainEvent, 'ingestedAt'>[] = [
@@ -219,7 +230,8 @@ export class GrantService {
 
       const allocatorRow = await client.query('SELECT next_sequence FROM allocators_projection WHERE allocator_id = $1', [allocatorId]);
       const sequence = allocatorRow.rows[0].next_sequence;
-      const voucherCode = generateVoucherCode('FY2026', 'COUNTY', sequence, '2026');
+      const fiscalYear = grantCycleId.replace('FY', '');
+      const voucherCode = generateVoucherCode(grantCycleId, 'COUNTY', sequence, fiscalYear);
 
       // Emit events
       const events: Omit<DomainEvent, 'ingestedAt'>[] = [
@@ -345,7 +357,7 @@ export class GrantService {
       bucketState.awardedCents.toString(), bucketState.availableCents.toString(), bucketState.encumberedCents.toString(), bucketState.liquidatedCents.toString(), bucketState.releasedCents.toString(),
       bucketState.rateNumeratorCents.toString(), bucketState.rateDenominatorCents.toString(),
       bucketState.matchingCommittedCents.toString(), bucketState.matchingReportedCents.toString(),
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id' // TODO: proper watermark
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
   }
 
@@ -393,7 +405,7 @@ export class GrantService {
     `, [
       state.voucherId, state.grantId, state.voucherCode, null, state.status, state.maxReimbursementCents.toString(), state.isLIRP,
       state.tentativeExpiresAt, state.expiresAt, state.issuedAt, state.redeemedAt, state.expiredAt, state.voidedAt,
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id'
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
   }
 
@@ -405,7 +417,10 @@ export class GrantService {
       ORDER BY ingested_at ASC, event_id ASC
     `, [allocatorId]);
 
-    const grantCycleId = eventRows.rows[0]?.grant_cycle_id ?? 'FY2026';
+    if (eventRows.rows.length === 0) {
+      throw new Error('ALLOCATOR_NOT_FOUND');
+    }
+    const grantCycleId = eventRows.rows[0].grant_cycle_id;
     const state = createInitialAllocatorState(allocatorId as any);
     for (const row of eventRows.rows) {
       const event = {
@@ -430,8 +445,8 @@ export class GrantService {
         watermark_ingested_at = EXCLUDED.watermark_ingested_at,
         watermark_event_id = EXCLUDED.watermark_event_id
     `, [
-      state.allocatorId, grantCycleId, 'COUNTY', state.nextSequence, // TODO: extract from hash or events
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id'
+      state.allocatorId, grantCycleId, 'COUNTY', state.nextSequence,
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
   }
 

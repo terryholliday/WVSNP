@@ -5,19 +5,23 @@
 
 import { Pool } from 'pg';
 import * as crypto from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { EventStore } from '../src/event-store';
 import { ClaimService } from '../src/application/claim-service';
 import { InvoiceService } from '../src/application/invoice-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 import { Money, Claim } from '../src/domain-types';
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'wvsnp_test',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const pool = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  : new Pool({
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5433', 10),
+      database: process.env.DB_NAME || 'wvsnp_test',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'postgres',
+    });
 
 const store = new EventStore(pool);
 const idempotency = new IdempotencyService(pool);
@@ -25,6 +29,13 @@ const claimService = new ClaimService(pool, store, idempotency);
 const invoiceService = new InvoiceService(pool, store, idempotency);
 
 describe('Phase 3 v5.1 Conformance Tests', () => {
+  beforeAll(async () => {
+    const schemaPath = join(__dirname, '../db/schema.sql');
+    const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
+    const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
+    await pool.query(schemaSql);
+  });
+
   beforeEach(async () => {
     await pool.query('TRUNCATE event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache CASCADE');
   });
@@ -38,7 +49,7 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
    * Expect: one claim created, second returns existing claimId, no duplicate CLAIM_SUBMITTED
    */
   test('TEST 1: Concurrent duplicate claim submission via fingerprint', async () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const actorId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
     // Setup clinic
@@ -163,7 +174,7 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
    * Expect: License expires on Jan 10, date of service Jan 11 → reject
    */
   test('TEST 4: License validation scoped to dateOfService', async () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const actorId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
     // Setup clinic with license expiring before date of service but after now
@@ -217,7 +228,7 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
    * Expect: Missing conditional artifact (rabies cert when rabiesIncluded true) → no CLAIM_SUBMITTED
    */
   test('TEST 5: Hard artifact enforcement prevents claim submission', async () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const actorId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
     await pool.query(`

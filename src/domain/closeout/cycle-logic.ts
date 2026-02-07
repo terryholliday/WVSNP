@@ -27,6 +27,7 @@ export interface MatchingFundsSummary {
   committedCents: MoneyCents;
   reportedCents: MoneyCents;
   shortfallCents: MoneyCents;
+  surplusCents: MoneyCents;
   evidenceArtifactIds: string[];
 }
 
@@ -125,11 +126,21 @@ export function applyCycleCloseoutEvent(state: CycleCloseoutState, event: any): 
     };
 
     const mf = eventData.matchingFunds as any;
+    const committedCents = Money.fromJSON(mf.committedCents);
+    const reportedCents = Money.fromJSON(mf.reportedCents);
+    const shortfallCents = (mf.shortfallCents !== undefined && mf.shortfallCents !== null)
+      ? Money.fromJSON(mf.shortfallCents)
+      : Money.fromBigInt(committedCents > reportedCents ? committedCents - reportedCents : 0n);
+    const surplusCents = (mf.surplusCents !== undefined && mf.surplusCents !== null)
+      ? Money.fromJSON(mf.surplusCents)
+      : Money.fromBigInt(reportedCents > committedCents ? reportedCents - committedCents : 0n);
+
     state.matchingFunds = {
-      committedCents: Money.fromJSON(mf.committedCents),
-      reportedCents: Money.fromJSON(mf.reportedCents),
-      shortfallCents: Money.fromJSON(mf.shortfallCents),
-      evidenceArtifactIds: mf.evidenceArtifactIds as string[],
+      committedCents,
+      reportedCents,
+      shortfallCents,
+      surplusCents,
+      evidenceArtifactIds: Array.isArray(mf.evidenceArtifactIds) ? mf.evidenceArtifactIds as string[] : [],
     };
 
     state.activitySummary = eventData.activitySummary as ActivitySummary;
@@ -149,9 +160,19 @@ export function applyCycleCloseoutEvent(state: CycleCloseoutState, event: any): 
   }
 
   if (eventType === 'GRANT_CYCLE_CLOSEOUT_AUDIT_RESOLVED') {
-    state.closeoutStatus = 'RECONCILED';
     state.auditResolution = eventData.resolution as string;
     state.auditResolvedAt = ingestedAt;
+    if (state.reconciledAt) {
+      state.closeoutStatus = 'RECONCILED';
+    } else if (state.startedAt) {
+      state.closeoutStatus = 'STARTED';
+    } else if (state.preflightStatus === 'PASSED') {
+      state.closeoutStatus = 'PREFLIGHT_PASSED';
+    } else if (state.preflightStatus === 'FAILED') {
+      state.closeoutStatus = 'PREFLIGHT_FAILED';
+    } else {
+      state.closeoutStatus = 'NOT_STARTED';
+    }
   }
 }
 
@@ -175,10 +196,19 @@ export function checkCycleCloseoutInvariant(state: CycleCloseoutState): void {
       throw new Error('CLOSEOUT_INVARIANT: awardedCents !== liquidatedCents + releasedCents + unspentCents');
     }
 
-    // Matching funds invariant: shortfall = committed - reported
-    const shortfall = state.matchingFunds.committedCents - state.matchingFunds.reportedCents;
-    if (shortfall !== state.matchingFunds.shortfallCents) {
-      throw new Error('CLOSEOUT_INVARIANT: shortfallCents !== committedCents - reportedCents');
+    // Matching funds invariant: shortfall/surplus clamp to zero
+    const committed = state.matchingFunds.committedCents;
+    const reported = state.matchingFunds.reportedCents;
+    const expectedShortfall = committed > reported ? committed - reported : 0n;
+    const expectedSurplus = reported > committed ? reported - committed : 0n;
+    if (expectedShortfall !== state.matchingFunds.shortfallCents) {
+      throw new Error('CLOSEOUT_INVARIANT: shortfallCents !== max(committedCents - reportedCents, 0)');
+    }
+    if (expectedSurplus !== state.matchingFunds.surplusCents) {
+      throw new Error('CLOSEOUT_INVARIANT: surplusCents !== max(reportedCents - committedCents, 0)');
+    }
+    if (state.matchingFunds.shortfallCents > 0n && state.matchingFunds.surplusCents > 0n) {
+      throw new Error('CLOSEOUT_INVARIANT: shortfallCents and surplusCents cannot both be positive');
     }
   }
 

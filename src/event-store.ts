@@ -125,12 +125,13 @@ export class EventStore {
         event_type,
         event_data,
         occurred_at,
+        ingested_at,
         grant_cycle_id,
         correlation_id,
         causation_id,
         actor_id,
         actor_type
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp(), $7, $8, $9, $10, $11)
       RETURNING ingested_at
     `;
 

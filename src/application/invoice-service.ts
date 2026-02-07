@@ -207,6 +207,16 @@ export class InvoiceService {
 
       const paymentId = EventStore.newEventId();
 
+      // Lookup grant_cycle_id from invoice
+      const invoiceRow = await client.query(
+        'SELECT grant_cycle_id FROM invoices_projection WHERE invoice_id = $1',
+        [request.invoiceId]
+      );
+      if (invoiceRow.rows.length === 0) {
+        throw new Error('INVOICE_NOT_FOUND');
+      }
+      const grantCycleId = invoiceRow.rows[0].grant_cycle_id;
+
       // Emit PAYMENT_RECORDED event
       const event: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
@@ -220,7 +230,7 @@ export class InvoiceService {
           referenceId: request.referenceId,
         },
         occurredAt: new Date(),
-        grantCycleId: 'FY2026',
+        grantCycleId,
         correlationId: request.correlationId,
         causationId: null,
         actorId: request.actorId as ActorId,
@@ -313,7 +323,7 @@ export class InvoiceService {
       state.invoiceId, state.clinicId, grantCycleId, state.periodStart, state.periodEnd,
       state.totalAmountCents.toString(), JSON.stringify(state.claimIds), JSON.stringify(state.adjustmentIds),
       derivedStatus, state.submittedAt, state.generatedAt,
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id'
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
   }
 }

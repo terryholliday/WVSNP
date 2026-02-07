@@ -1,0 +1,50 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e5]:
+        - link "Back to Home" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img [ref=e7]
+          - text: Back to Home
+        - generic [ref=e10]: Step 1 of 4
+    - main [ref=e11]:
+      - generic [ref=e12]:
+        - heading "WVSNP Grantee Application" [level=1] [ref=e13]
+        - generic [ref=e14]:
+          - heading "Organization Information" [level=2] [ref=e15]
+          - generic [ref=e16]:
+            - generic [ref=e17]: Organization Name *
+            - textbox [ref=e18]
+          - generic [ref=e19]:
+            - generic [ref=e20]:
+              - generic [ref=e21]: EIN (Tax ID) *
+              - textbox "XX-XXXXXXX" [ref=e22]
+            - generic [ref=e23]:
+              - generic [ref=e24]: Year Established *
+              - spinbutton [ref=e25]
+          - generic [ref=e26]:
+            - generic [ref=e27]: Organization Type *
+            - combobox [ref=e28]:
+              - option "Select type..." [selected]
+              - option "Animal Shelter"
+              - option "Rescue Organization"
+              - option "Humane Society"
+              - option "SPCA"
+              - option "Other 501(c)(3)"
+          - generic [ref=e29]:
+            - generic [ref=e30]: Annual Operating Budget *
+            - combobox [ref=e31]:
+              - option "Select range..." [selected]
+              - option "Under $50,000"
+              - option "$50,000 - $100,000"
+              - option "$100,000 - $250,000"
+              - option "$250,000 - $500,000"
+              - option "Over $500,000"
+          - 'button "Next: Contact Information" [ref=e33]'
+  - button "Open Next.js Dev Tools" [ref=e39] [cursor=pointer]:
+    - img [ref=e40]
+  - alert [ref=e43]
+```

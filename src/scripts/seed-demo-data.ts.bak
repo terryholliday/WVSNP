@@ -1,0 +1,422 @@
+/**
+ * WVSNP Demo Data Seeder
+ * Generates realistic West Virginia data for demonstration purposes
+ */
+
+import { config } from 'dotenv';
+import { Pool } from 'pg';
+import { randomUUID } from 'crypto';
+
+// Load environment variables from .env file
+config();
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/wvsnp_gms',
+});
+
+// West Virginia Counties (55 total)
+const WV_COUNTIES = [
+  'BARBOUR', 'BERKELEY', 'BOONE', 'BRAXTON', 'BROOKE', 'CABELL', 'CALHOUN',
+  'CLAY', 'DODDRIDGE', 'FAYETTE', 'GILMER', 'GRANT', 'GREENBRIER', 'HAMPSHIRE',
+  'HANCOCK', 'HARDY', 'HARRISON', 'JACKSON', 'JEFFERSON', 'KANAWHA', 'LEWIS',
+  'LINCOLN', 'LOGAN', 'MARION', 'MARSHALL', 'MASON', 'MCDOWELL', 'MERCER',
+  'MINERAL', 'MINGO', 'MONONGALIA', 'MONROE', 'MORGAN', 'NICHOLAS', 'OHIO',
+  'PENDLETON', 'PLEASANTS', 'POCAHONTAS', 'PRESTON', 'PUTNAM', 'RALEIGH',
+  'RANDOLPH', 'RITCHIE', 'ROANE', 'SUMMERS', 'TAYLOR', 'TUCKER', 'TYLER',
+  'UPSHUR', 'WAYNE', 'WEBSTER', 'WETZEL', 'WIRT', 'WOOD', 'WYOMING'
+];
+
+// Major counties with higher activity
+const MAJOR_COUNTIES = ['GREENBRIER', 'KANAWHA', 'BERKELEY', 'CABELL', 'MONONGALIA', 'WOOD', 'RALEIGH', 'HARRISON', 'MERCER'];
+
+// Realistic WV clinic names
+const CLINIC_NAMES = [
+  'Charleston Animal Hospital',
+  'Mountaineer Veterinary Clinic',
+  'Blue Ridge Animal Care',
+  'Appalachian Pet Hospital',
+  'New River Veterinary Services',
+  'Kanawha Valley Animal Clinic',
+  'Eastern Panhandle Vet Center',
+  'Coal Country Animal Hospital',
+  'Greenbrier Valley Veterinary',
+  'Mon Valley Pet Care',
+  'Ohio Valley Animal Clinic',
+  'Potomac Highlands Veterinary',
+];
+
+// Realistic WV shelter/rescue names
+const SHELTER_NAMES = [
+  'Kanawha-Charleston Humane Association',
+  'Berkeley County Animal Shelter',
+  'Cabell-Wayne Animal Shelter',
+  'Monongalia County Humane Society',
+  'Raleigh County Animal Shelter',
+  'Harrison County Humane Society',
+  'Wood County Animal Shelter',
+  'Mercer County Animal Shelter',
+  'Friends of Greenbrier County Animals',
+  'Mountain State Rescue',
+  'West Virginia Spay Neuter Alliance',
+  'Appalachian Animal Rescue',
+];
+
+interface SeedStats {
+  grantCycles: number;
+  grants: number;
+  vouchers: number;
+  claims: number;
+  invoices: number;
+}
+
+async function seedDemoData(): Promise<SeedStats> {
+  const stats: SeedStats = {
+    grantCycles: 0,
+    grants: 0,
+    vouchers: 0,
+    claims: 0,
+    invoices: 0,
+  };
+
+  console.log('🌱 Starting WVSNP demo data seed...\n');
+
+  // 1. Create Grant Cycle for FY2025
+  console.log('📅 Creating grant cycle...');
+  const grantCycleId = randomUUID();
+  const cycleStartDate = new Date('2024-07-01');
+  const cycleEndDate = new Date('2025-06-30');
+
+  await insertEvent({
+    eventType: 'GRANT_CYCLE_CREATED',
+    aggregateId: grantCycleId,
+    aggregateType: 'GRANT_CYCLE',
+    payload: {
+      grantCycleId,
+      name: 'FY2025 WVSNP Grant Cycle',
+      fiscalYear: 2025,
+      startDate: cycleStartDate.toISOString(),
+      endDate: cycleEndDate.toISOString(),
+      status: 'ACTIVE',
+    },
+    occurredAt: cycleStartDate,
+    grantCycleId: grantCycleId,
+  });
+  stats.grantCycles++;
+
+  // 2. Create Grants for counties
+  console.log('🎯 Creating grants for WV counties...');
+  const grantIds: Record<string, { spay: string; neuter: string; lirp: string }> = {};
+
+  for (const county of MAJOR_COUNTIES) {
+    const isMajor = MAJOR_COUNTIES.includes(county);
+    const baseAmount = isMajor ? 15000000 : 8000000; // $150k or $80k in cents
+
+    // SPAY grant
+    const spayGrantId = randomUUID();
+    await insertEvent({
+      eventType: 'GRANT_AWARDED',
+      aggregateId: spayGrantId,
+      aggregateType: 'GRANT',
+      payload: {
+        grantId: spayGrantId,
+        grantCycleId,
+        countyCode: county,
+        bucketType: 'SPAY',
+        awardedCents: baseAmount.toString(),
+      },
+      occurredAt: cycleStartDate,
+      grantCycleId: grantCycleId,
+    });
+
+    // NEUTER grant
+    const neuterGrantId = randomUUID();
+    await insertEvent({
+      eventType: 'GRANT_AWARDED',
+      aggregateId: neuterGrantId,
+      aggregateType: 'GRANT',
+      payload: {
+        grantId: neuterGrantId,
+        grantCycleId,
+        countyCode: county,
+        bucketType: 'NEUTER',
+        awardedCents: String(neuterAmount),
+      },
+      occurredAt: cycleStartDate,
+      grantCycleId: grantCycleId,
+    });
+
+    // LIRP grant
+    const lirpGrantId = randomUUID();
+    await insertEvent({
+      eventType: 'GRANT_AWARDED',
+      aggregateId: lirpGrantId,
+      aggregateType: 'GRANT',
+      payload: {
+        grantId: lirpGrantId,
+        grantCycleId,
+        countyCode: county,
+        bucketType: 'LIRP',
+        awardedCents: (baseAmount * 0.5).toString(),
+      },
+      occurredAt: cycleStartDate,
+      grantCycleId: grantCycleId,
+    });
+
+    grantIds[county] = { spay: spayGrantId, neuter: neuterGrantId, lirp: lirpGrantId };
+    stats.grants += 3;
+  }
+
+  // 3. Create Vouchers
+  console.log('🎫 Issuing vouchers...');
+  const vouchers: Array<{ voucherId: string; voucherCode: string; grantId: string; county: string; procedure: string; amount: number; issuedAt: Date; expiresAt: Date }> = [];
+  
+  let voucherCounter = 1;
+  const startDate = new Date('2024-07-15');
+  
+  for (let month = 0; month < 8; month++) {
+    for (const county of MAJOR_COUNTIES) {
+      const vouchersThisMonth = Math.floor(Math.random() * 30) + 40; // 40-70 vouchers per county per month
+      
+      for (let i = 0; i < vouchersThisMonth; i++) {
+        const issuedAt = new Date(startDate);
+        issuedAt.setMonth(startDate.getMonth() + month);
+        issuedAt.setDate(Math.floor(Math.random() * 28) + 1);
+        
+        const expiresAt = new Date(issuedAt);
+        expiresAt.setDate(expiresAt.getDate() + 90); // 90 days expiration
+        
+        const procedures = ['DOG_SPAY', 'DOG_NEUTER', 'CAT_SPAY', 'CAT_NEUTER'];
+        const procedure = procedures[Math.floor(Math.random() * procedures.length)];
+        const isLIRP = Math.random() < 0.15; // 15% LIRP
+        
+        let bucketType: 'spay' | 'neuter' | 'lirp';
+        let amount: number;
+        
+        if (isLIRP) {
+          bucketType = 'lirp';
+          amount = procedure.includes('DOG') ? 7500 : 5500;
+        } else if (procedure.includes('SPAY')) {
+          bucketType = 'spay';
+          amount = procedure === 'DOG_SPAY' ? 7500 : 5500;
+        } else {
+          bucketType = 'neuter';
+          amount = procedure === 'DOG_NEUTER' ? 6500 : 4500;
+        }
+        
+        const voucherId = randomUUID();
+        const dateStr = issuedAt.toISOString().split('T')[0].replace(/-/g, '');
+        const voucherCode = `${county}-${dateStr}-${String(voucherCounter).padStart(4, '0')}`;
+        
+        await insertEvent({
+          eventType: 'VOUCHER_ISSUED',
+          aggregateId: voucherId,
+          aggregateType: 'VOUCHER',
+          payload: {
+            voucherId,
+            voucherCode,
+            grantId: grantIds[county][bucketType],
+            countyCode: county,
+            procedureType: procedure,
+            maxReimbursementCents: amount.toString(),
+            isLIRP,
+            expiresAt: expiresAt.toISOString(),
+          },
+          occurredAt: issuedAt,
+        });
+        
+        vouchers.push({ voucherId, voucherCode, grantId: grantIds[county][bucketType], county, procedure, amount, issuedAt, expiresAt });
+        voucherCounter++;
+        stats.vouchers++;
+      }
+    }
+  }
+
+  console.log(`   ✓ Created ${stats.vouchers} vouchers`);
+
+  // 4. Create Claims (80% of vouchers get redeemed)
+  console.log('📋 Submitting claims...');
+  const clinicIds = CLINIC_NAMES.map(() => randomUUID());
+  
+  const redeemedVouchers = vouchers.filter(() => Math.random() < 0.80);
+  
+  for (const voucher of redeemedVouchers) {
+    const clinicId = clinicIds[Math.floor(Math.random() * clinicIds.length)];
+    const dateOfService = new Date(voucher.issuedAt);
+    dateOfService.setDate(dateOfService.getDate() + Math.floor(Math.random() * 60) + 5); // 5-65 days after issuance
+    
+    const submittedAt = new Date(dateOfService);
+    submittedAt.setDate(submittedAt.getDate() + Math.floor(Math.random() * 5) + 1); // 1-5 days after service
+    
+    const claimId = randomUUID();
+    const claimFingerprint = `${voucher.voucherCode}-${dateOfService.toISOString().split('T')[0]}`;
+    
+    // Redeem voucher
+    await insertEvent({
+      eventType: 'VOUCHER_REDEEMED',
+      aggregateId: voucher.voucherId,
+      aggregateType: 'VOUCHER',
+      payload: {
+        voucherId: voucher.voucherId,
+        claimId,
+        redeemedAt: dateOfService.toISOString(),
+      },
+      occurredAt: dateOfService,
+    });
+    
+    // Submit claim
+    await insertEvent({
+      eventType: 'CLAIM_SUBMITTED',
+      aggregateId: claimId,
+      aggregateType: 'CLAIM',
+      payload: {
+        claimId,
+        claimFingerprint,
+        voucherId: voucher.voucherId,
+        voucherCode: voucher.voucherCode,
+        clinicId,
+        procedureCode: voucher.procedure,
+        dateOfService: dateOfService.toISOString().split('T')[0],
+        submittedAmountCents: voucher.amount.toString(),
+      },
+      occurredAt: submittedAt,
+    });
+    
+    // Adjudicate claim (95% approved)
+    const isApproved = Math.random() < 0.95;
+    const adjudicatedAt = new Date(submittedAt);
+    adjudicatedAt.setDate(adjudicatedAt.getDate() + Math.floor(Math.random() * 10) + 3); // 3-12 days later
+    
+    if (isApproved) {
+      await insertEvent({
+        eventType: 'CLAIM_ADJUDICATED',
+        aggregateId: claimId,
+        aggregateType: 'CLAIM',
+        payload: {
+          claimId,
+          decision: 'APPROVE',
+          approvedAmountCents: voucher.amount.toString(),
+          decisionBasis: { reason: 'All documentation complete and valid' },
+        },
+        occurredAt: adjudicatedAt,
+      });
+    } else {
+      await insertEvent({
+        eventType: 'CLAIM_ADJUDICATED',
+        aggregateId: claimId,
+        aggregateType: 'CLAIM',
+        payload: {
+          claimId,
+          decision: 'DENY',
+          decisionBasis: { reason: 'Missing required documentation' },
+        },
+        occurredAt: adjudicatedAt,
+      });
+    }
+    
+    stats.claims++;
+  }
+
+  console.log(`   ✓ Created ${stats.claims} claims`);
+
+  // 5. Create Invoices (monthly for each clinic)
+  console.log('💰 Generating invoices...');
+  for (let month = 0; month < 7; month++) {
+    const invoiceMonth = 7 + month; // July through January
+    const invoiceYear = invoiceMonth <= 12 ? 2024 : 2025;
+    const actualMonth = invoiceMonth > 12 ? invoiceMonth - 12 : invoiceMonth;
+    
+    for (let i = 0; i < clinicIds.length; i++) {
+      const clinicId = clinicIds[i];
+      const invoiceId = randomUUID();
+      
+      // Random number of claims for this clinic this month
+      const claimCount = Math.floor(Math.random() * 30) + 10;
+      const avgAmount = 6000; // Average $60 per claim
+      const totalAmount = claimCount * avgAmount;
+      
+      const generatedAt = new Date(invoiceYear, actualMonth, 5); // 5th of next month
+      
+      await insertEvent({
+        eventType: 'INVOICE_GENERATED',
+        aggregateId: invoiceId,
+        aggregateType: 'INVOICE',
+        payload: {
+          invoiceId,
+          clinicId,
+          month: actualMonth,
+          year: invoiceYear,
+          totalAmountCents: totalAmount.toString(),
+          claimCount,
+        },
+        occurredAt: generatedAt,
+      });
+      
+      stats.invoices++;
+    }
+  }
+
+  console.log(`   ✓ Created ${stats.invoices} invoices`);
+
+  console.log('\n✅ Demo data seeding complete!\n');
+  console.log('Summary:');
+  console.log(`  Grant Cycles: ${stats.grantCycles}`);
+  console.log(`  Grants: ${stats.grants}`);
+  console.log(`  Vouchers: ${stats.vouchers}`);
+  console.log(`  Claims: ${stats.claims}`);
+  console.log(`  Invoices: ${stats.invoices}`);
+  console.log('\n🎉 WVSNP portal is ready for demonstration!\n');
+
+  return stats;
+}
+
+async function insertEvent(event: {
+  eventType: string;
+  aggregateId: string;
+  aggregateType: string;
+  payload: any;
+  occurredAt: Date;
+  grantCycleId: string;
+}) {
+  const eventId = generateUUIDv7();
+  const correlationId = randomUUID();
+
+  await pool.query(
+    `INSERT INTO event_log (
+      event_id, event_type, aggregate_id, aggregate_type,
+      event_data, occurred_at, grant_cycle_id, correlation_id, causation_id,
+      actor_id, actor_type
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [
+      eventId,
+      event.eventType,
+      event.aggregateId,
+      event.aggregateType,
+      JSON.stringify(event.payload),
+      event.occurredAt,
+      event.grantCycleId,
+      correlationId,
+      null,
+      'SYSTEM',
+      'SYSTEM',
+    ]
+  );
+}
+
+function generateUUIDv7(): string {
+  // Simplified UUIDv7 generation (timestamp-based)
+  const timestamp = Date.now();
+  const uuid = randomUUID();
+  const parts = uuid.split('-');
+  const timestampHex = timestamp.toString(16).padStart(12, '0');
+  return `${timestampHex.slice(0, 8)}-${timestampHex.slice(8, 12)}-7${parts[2].slice(1)}-${parts[3]}-${parts[4]}`;
+}
+
+// Run seeder
+seedDemoData()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error('❌ Seeding failed:', error);
+    process.exit(1);
+  });

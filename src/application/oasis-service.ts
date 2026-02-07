@@ -106,7 +106,18 @@ export class OasisService {
       );
 
       const exportBatchId = crypto.randomUUID() as ExportBatchId;
-      const batchCode = `WVSNP-${request.grantCycleId.slice(0, 8)}-${Date.now()}`;
+      const periodStartStr = request.periodStart.toISOString().split('T')[0].replace(/-/g, '');
+      const periodEndStr = request.periodEnd.toISOString().split('T')[0].replace(/-/g, '');
+      let batchCode = `WVSNP-${request.grantCycleId}-${periodStartStr}-${periodEndStr}`;
+      if (batchCode.length > 30) {
+        const grantCycleToken = crypto
+          .createHash('sha256')
+          .update(request.grantCycleId, 'utf8')
+          .digest('hex')
+          .slice(0, 6)
+          .toUpperCase();
+        batchCode = `WVSNP-${grantCycleToken}-${periodStartStr}-${periodEndStr}`;
+      }
 
       // Emit OASIS_EXPORT_BATCH_CREATED
       const batchCreatedEvent: Omit<DomainEvent, 'ingestedAt'> = {
@@ -676,7 +687,7 @@ export class OasisService {
       state.status, state.recordCount, state.controlTotalCents.toString(), state.artifactId, state.fileSha256, state.formatVersion,
       state.submittedAt, state.submissionMethod, state.oasisRefId, state.acknowledgedAt,
       state.rejectionReason, state.rejectionCode, state.voidedReason, state.voidedByActorId,
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || 'dummy'
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
 
     // Update batch items

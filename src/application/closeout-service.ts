@@ -265,7 +265,8 @@ export class CloseoutService {
       const matchingFunds: MatchingFundsSummary = {
         committedCents: Money.fromBigInt(committed),
         reportedCents: Money.fromBigInt(reported),
-        shortfallCents: Money.fromBigInt(shortfall),
+        shortfallCents: Money.fromBigInt(shortfall > 0n ? shortfall : 0n),
+        surplusCents: Money.fromBigInt(shortfall < 0n ? -shortfall : 0n),
         evidenceArtifactIds: [],
       };
 
@@ -277,7 +278,7 @@ export class CloseoutService {
           COUNT(*) FILTER (WHERE status = 'EXPIRED') as expired,
           COUNT(*) FILTER (WHERE status = 'VOIDED') as voided
         FROM vouchers_projection
-        WHERE grant_id IN (SELECT grant_id FROM grants_projection WHERE grant_cycle_id = $1)
+        WHERE grant_id IN (SELECT DISTINCT grant_id FROM grant_balances_projection WHERE grant_cycle_id = $1)
       `, [request.grantCycleId]);
 
       const claims = await client.query(`
@@ -340,6 +341,7 @@ export class CloseoutService {
             committedCents: matchingFunds.committedCents.toString(),
             reportedCents: matchingFunds.reportedCents.toString(),
             shortfallCents: matchingFunds.shortfallCents.toString(),
+            surplusCents: matchingFunds.surplusCents.toString(),
             evidenceArtifactIds: matchingFunds.evidenceArtifactIds,
           },
           activitySummary,
@@ -582,13 +584,14 @@ export class CloseoutService {
         committedCents: state.matchingFunds.committedCents.toString(),
         reportedCents: state.matchingFunds.reportedCents.toString(),
         shortfallCents: state.matchingFunds.shortfallCents.toString(),
+        surplusCents: state.matchingFunds.surplusCents.toString(),
         evidenceArtifactIds: state.matchingFunds.evidenceArtifactIds,
       }) : null,
       state.activitySummary ? JSON.stringify(state.activitySummary) : null,
       state.reconciliationWatermarkIngestedAt, state.reconciliationWatermarkEventId,
       state.closedAt, state.closedByActorId, state.finalBalanceCents ? state.finalBalanceCents.toString() : null,
       state.auditHoldReason, state.auditHoldAt, state.auditResolvedAt, state.auditResolution,
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || 'dummy'
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || crypto.randomUUID()
     ]);
   }
 

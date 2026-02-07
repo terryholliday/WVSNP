@@ -5,18 +5,22 @@
 
 import { Pool } from 'pg';
 import * as crypto from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { EventStore } from '../src/event-store';
 import { OasisService } from '../src/application/oasis-service';
 import { CloseoutService } from '../src/application/closeout-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'wvsnp_test',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const pool = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  : new Pool({
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5433', 10),
+      database: process.env.DB_NAME || 'wvsnp_test',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'postgres',
+    });
 
 const store = new EventStore(pool);
 const idempotency = new IdempotencyService(pool);
@@ -24,6 +28,13 @@ const oasisService = new OasisService(pool, store, idempotency);
 const closeoutService = new CloseoutService(pool, store, idempotency);
 
 describe('Phase 4 v5.2 Conformance Tests', () => {
+  beforeAll(async () => {
+    const schemaPath = join(__dirname, '../db/schema.sql');
+    const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
+    const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
+    await pool.query(schemaSql);
+  });
+
   beforeEach(async () => {
     await pool.query('TRUNCATE event_log, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache CASCADE');
   });

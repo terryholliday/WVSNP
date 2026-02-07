@@ -1,6 +1,10 @@
-﻿import express from 'express';
+import 'dotenv/config';
+import express from 'express';
 import { Pool } from 'pg';
 import { EventStore, Watermark, DomainEvent } from './event-store';
+import { rebuildAllProjections } from './projections/rebuild';
+import { createPublicApplicationRouter } from './api/routes/public-application';
+import { createAdminApplicationRouter } from './api/routes/admin-application';
 
 const EVENT_TYPE_REGEX = /^[A-Z0-9_]+$/;
 
@@ -87,6 +91,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Mount public application routes
+app.use('/api/v1/public/applications', createPublicApplicationRouter(pool, store));
+
+// Mount admin application routes
+app.use('/api/v1/admin/applications', createAdminApplicationRouter(pool));
+
 app.post('/events', async (req, res) => {
   try {
     const payload = requireObject(req.body, 'body');
@@ -113,8 +123,18 @@ app.post('/events/query', async (req, res) => {
   }
 });
 
+app.post('/events/rebuild', async (_req, res) => {
+  try {
+    const result = await rebuildAllProjections(pool);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`WVSNP-GMS Phase1 API listening on ${port}`);
 });
+

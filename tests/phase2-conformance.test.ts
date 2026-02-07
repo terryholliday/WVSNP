@@ -5,19 +5,23 @@
 
 import { Pool } from 'pg';
 import * as crypto from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { EventStore } from '../src/event-store';
 import { GrantService } from '../src/application/grant-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 import { Money, Allocator } from '../src/domain-types';
 import { sweepExpiredTentatives } from '../src/jobs/sweep-expired-tentatives';
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'wvsnp_test',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const pool = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  : new Pool({
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5433', 10),
+      database: process.env.DB_NAME || 'wvsnp_test',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'postgres',
+    });
 
 const store = new EventStore(pool);
 const idempotency = new IdempotencyService(pool);
@@ -25,6 +29,11 @@ const grantService = new GrantService(pool, store, idempotency);
 
 describe('Phase 2 Conformance Tests', () => {
   beforeAll(async () => {
+    const schemaPath = join(__dirname, '../db/schema.sql');
+    const schemaSqlRaw = readFileSync(schemaPath, 'utf-8');
+    const schemaSql = schemaSqlRaw.replace(/^\uFEFF/, '').replace(/\u200B/g, '');
+    await pool.query(schemaSql);
+
     // Ensure clean state
     await pool.query('TRUNCATE event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache CASCADE');
   });
@@ -35,7 +44,7 @@ describe('Phase 2 Conformance Tests', () => {
 
   test('TEST 1: Bucket Isolation - GENERAL and LIRP buckets are separate', async () => {
     const grantId = EventStore.newEventId();
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const event = {
       eventId: EventStore.newEventId(),
       aggregateType: 'GRANT',
@@ -103,7 +112,7 @@ describe('Phase 2 Conformance Tests', () => {
   });
 
   test('TEST 3: Allocator Deterministic Hash - Same inputs produce same ID', () => {
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const id1 = Allocator.createId(grantCycleId, 'COUNTY');
     const id2 = Allocator.createId(grantCycleId, 'COUNTY');
     expect(id1).toBe(id2);
@@ -114,7 +123,7 @@ describe('Phase 2 Conformance Tests', () => {
 
   test('TEST 4: Money Encoding - MoneyCents stored as strings in JSONB', async () => {
     const grantId = EventStore.newEventId();
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     await store.append({
       eventId: EventStore.newEventId(),
       aggregateType: 'GRANT',
@@ -153,7 +162,7 @@ describe('Phase 2 Conformance Tests', () => {
     const grantId = EventStore.newEventId();
     await pool.query(
       'INSERT INTO grant_balances_projection (grant_id, grant_cycle_id, bucket_type, awarded_cents, available_cents, encumbered_cents, liquidated_cents, released_cents, rate_numerator_cents, rate_denominator_cents, matching_committed_cents, matching_reported_cents, rebuilt_at, watermark_ingested_at, watermark_event_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)',
-      [grantId, crypto.randomUUID(), 'GENERAL', 100000, 100000, 0, 0, 0, 80, 100, 0, 0, new Date(), new Date(), EventStore.newEventId()]
+      [grantId, 'FY2026', 'GENERAL', 100000, 100000, 0, 0, 0, 80, 100, 0, 0, new Date(), new Date(), EventStore.newEventId()]
     );
 
     const updateResult = await pool.query('UPDATE grant_balances_projection SET available_cents = 50000, encumbered_cents = 50000 WHERE grant_id = $1', [grantId]);
@@ -165,7 +174,7 @@ describe('Phase 2 Conformance Tests', () => {
   test('TEST 7: Sweep Job - Expired tentatives are detected', async () => {
     const voucherId = EventStore.newEventId();
     const grantId = EventStore.newEventId();
-    const grantCycleId = crypto.randomUUID();
+    const grantCycleId = 'FY2026';
     const actorId = crypto.randomUUID();
     const correlationId = crypto.randomUUID();
 
@@ -207,7 +216,7 @@ describe('Phase 2 Conformance Tests', () => {
     await expect(
       pool.query(
         'INSERT INTO grant_balances_projection (grant_id, grant_cycle_id, bucket_type, awarded_cents, available_cents, encumbered_cents, liquidated_cents, released_cents, rate_numerator_cents, rate_denominator_cents, matching_committed_cents, matching_reported_cents, rebuilt_at, watermark_ingested_at, watermark_event_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)',
-        [grantId, crypto.randomUUID(), 'GENERAL', 100000, 50000, 30000, 10000, 0, 80, 100, 0, 0, new Date(), new Date(), EventStore.newEventId()]
+        [grantId, 'FY2026', 'GENERAL', 100000, 50000, 30000, 10000, 0, 80, 100, 0, 0, new Date(), new Date(), EventStore.newEventId()]
       )
     ).rejects.toThrow(/balance_invariant/);
   });
