@@ -59,7 +59,12 @@ CREATE INDEX IF NOT EXISTS idx_event_log_tentative
 CREATE OR REPLACE FUNCTION stamp_ingested_at()
 RETURNS trigger AS $$
 BEGIN
-  NEW.ingested_at := clock_timestamp();
+  -- Truncate to millisecond precision so that JavaScript Date (which only
+  -- supports ms) can represent the value without loss.  This prevents the
+  -- watermark pagination comparisons from silently re-fetching the boundary
+  -- event when the sub-millisecond fraction is dropped during the JS
+  -- round-trip.
+  NEW.ingested_at := date_trunc('milliseconds', clock_timestamp());
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -192,7 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_tentative_expiry
   WHERE status = 'TENTATIVE';
 
 CREATE TABLE IF NOT EXISTS allocators_projection (
-  allocator_id UUID PRIMARY KEY,  -- Hash-derived UUID (first 32 hex chars of SHA-256)
+  allocator_id UUID PRIMARY KEY,  -- Hash-derived UUID (see IDENTITY_EXCEPTIONS.md)
   grant_cycle_id VARCHAR(20) NOT NULL,
   county_code VARCHAR(20) NOT NULL,
   next_sequence BIGINT NOT NULL DEFAULT 1,
