@@ -61,10 +61,12 @@ export class ClaimService {
         throw new Error('MISSING_REQUIRED_ARTIFACTS: coPayReceiptId');
       }
 
-      // FIX 8: ClaimId must be UUIDv4 (client-generated or server fallback)
-      if (!UUID_V4_REGEX.test(request.grantCycleId)) {
+      // Validate grantCycleId is a non-empty string (may be fiscal-year label like "FY2026")
+      if (!request.grantCycleId || request.grantCycleId.trim().length === 0) {
         throw new Error('GRANT_CYCLE_ID_INVALID');
       }
+
+      // FIX 8: ClaimId must be UUIDv4 (client-generated or server fallback)
       const claimId = (request.claimId ?? crypto.randomUUID()) as ClaimId;
       if (!UUID_V4_REGEX.test(claimId)) {
         throw new Error('CLAIM_ID_INVALID');
