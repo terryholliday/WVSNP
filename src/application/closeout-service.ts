@@ -33,6 +33,16 @@ export class CloseoutService {
     try {
       await client.query('BEGIN');
 
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'RUN_PREFLIGHT', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
+
       // Run all preflight checks
       const checks: PreflightCheck[] = [];
 
@@ -119,7 +129,7 @@ export class CloseoutService {
       });
 
       const allPassed = checks.every(c => c.pass);
-      const status = allPassed ? 'PASSED' : 'FAILED';
+      const status: 'PASSED' | 'FAILED' = allPassed ? 'PASSED' : 'FAILED';
 
       // Emit GRANT_CYCLE_CLOSEOUT_PREFLIGHT_COMPLETED
       const preflightEvent: Omit<DomainEvent, 'ingestedAt'> = {
@@ -144,8 +154,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status, checks };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status, checks };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -164,6 +176,16 @@ export class CloseoutService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'START_CLOSEOUT', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
 
       // Check preflight passed
       const closeoutRow = await client.query(
@@ -200,8 +222,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status: 'STARTED' };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status: 'STARTED' };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -222,6 +246,16 @@ export class CloseoutService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'RECONCILE', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
 
       // Calculate financial summary
       const balances = await client.query(`
@@ -271,13 +305,13 @@ export class CloseoutService {
 
       // Calculate activity summary
       const vouchers = await client.query(`
-        SELECT 
+        SELECT
           COUNT(*) FILTER (WHERE status = 'ISSUED') as issued,
           COUNT(*) FILTER (WHERE status = 'REDEEMED') as redeemed,
           COUNT(*) FILTER (WHERE status = 'EXPIRED') as expired,
           COUNT(*) FILTER (WHERE status = 'VOIDED') as voided
         FROM vouchers_projection
-        WHERE grant_id IN (SELECT grant_id FROM grants_projection WHERE grant_cycle_id = $1)
+        WHERE grant_id IN (SELECT DISTINCT grant_id FROM grant_balances_projection WHERE grant_cycle_id = $1)
       `, [request.grantCycleId]);
 
       const claims = await client.query(`
@@ -355,8 +389,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status: 'RECONCILED' };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status: 'RECONCILED' };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -375,6 +411,16 @@ export class CloseoutService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'CLOSE_CYCLE', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
 
       // Rebuild state to check if close is allowed
       const eventRows = await client.query(`
@@ -423,8 +469,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status: 'CLOSED' };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status: 'CLOSED' };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -444,6 +492,16 @@ export class CloseoutService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'AUDIT_HOLD', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
 
       const holdEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
@@ -466,8 +524,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status: 'AUDIT_HOLD' };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status: 'AUDIT_HOLD' };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -487,6 +547,16 @@ export class CloseoutService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const idempStatus = await this.idempotency.checkAndReserve(client, request.idempotencyKey, 'AUDIT_RESOLVE', 'hash', 86400);
+      if (idempStatus === 'COMPLETED') {
+        const cached = await client.query('SELECT response_json FROM idempotency_cache WHERE idempotency_key = $1', [request.idempotencyKey]);
+        await client.query('COMMIT');
+        return cached.rows[0].response_json;
+      }
+      if (idempStatus === 'PROCESSING') {
+        throw new Error('OPERATION_IN_PROGRESS');
+      }
 
       const resolvedEvent: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
@@ -509,8 +579,10 @@ export class CloseoutService {
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
+      const response = { status: 'RECONCILED' };
+      await this.idempotency.recordResult(client, request.idempotencyKey, response);
       await client.query('COMMIT');
-      return { status: 'RECONCILED' };
+      return response;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

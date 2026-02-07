@@ -248,7 +248,7 @@ export class GrantService {
           eventData: {
             voucherId: request.voucherId,
             amountCents: maxReimbursementCents.toString(),
-            isLIRP: false, // TODO
+            isLIRP: voucherRow.rows[0].is_lirp,
           },
           occurredAt: new Date(),
           grantCycleId,
@@ -345,19 +345,20 @@ export class GrantService {
       bucketState.awardedCents.toString(), bucketState.availableCents.toString(), bucketState.encumberedCents.toString(), bucketState.liquidatedCents.toString(), bucketState.releasedCents.toString(),
       bucketState.rateNumeratorCents.toString(), bucketState.rateDenominatorCents.toString(),
       bucketState.matchingCommittedCents.toString(), bucketState.matchingReportedCents.toString(),
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id' // TODO: proper watermark
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || EventStore.newEventId()
     ]);
   }
 
   private async updateVoucherProjection(client: PoolClient, voucherId: VoucherId): Promise<void> {
     const eventRows = await client.query(`
-      SELECT event_type, event_data, ingested_at
+      SELECT event_id, event_type, event_data, ingested_at, grant_cycle_id
       FROM event_log
       WHERE aggregate_id = $1
       ORDER BY ingested_at ASC, event_id ASC
     `, [voucherId]);
 
-    const state = createInitialVoucherState(voucherId, 'dummy-grant-id'); // TODO: get grantId from events
+    const grantId = (eventRows.rows[0]?.event_data as any)?.grantId || voucherId;
+    const state = createInitialVoucherState(voucherId, grantId);
     for (const row of eventRows.rows) {
       const event = {
         eventType: row.event_type,
@@ -393,19 +394,19 @@ export class GrantService {
     `, [
       state.voucherId, state.grantId, state.voucherCode, null, state.status, state.maxReimbursementCents.toString(), state.isLIRP,
       state.tentativeExpiresAt, state.expiresAt, state.issuedAt, state.redeemedAt, state.expiredAt, state.voidedAt,
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id'
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || EventStore.newEventId()
     ]);
   }
 
   private async updateAllocatorProjection(client: PoolClient, allocatorId: string): Promise<void> {
     const eventRows = await client.query(`
-      SELECT event_type, event_data, ingested_at, grant_cycle_id
+      SELECT event_id, event_type, event_data, ingested_at, grant_cycle_id
       FROM event_log
       WHERE aggregate_id = $1
       ORDER BY ingested_at ASC, event_id ASC
     `, [allocatorId]);
 
-    const grantCycleId = eventRows.rows[0]?.grant_cycle_id ?? 'FY2026';
+    const grantCycleId = eventRows.rows[0]?.grant_cycle_id;
     const state = createInitialAllocatorState(allocatorId as any);
     for (const row of eventRows.rows) {
       const event = {
@@ -430,8 +431,8 @@ export class GrantService {
         watermark_ingested_at = EXCLUDED.watermark_ingested_at,
         watermark_event_id = EXCLUDED.watermark_event_id
     `, [
-      state.allocatorId, grantCycleId, 'COUNTY', state.nextSequence, // TODO: extract from hash or events
-      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), 'dummy-event-id'
+      state.allocatorId, grantCycleId, 'COUNTY', state.nextSequence,
+      new Date(), eventRows.rows[eventRows.rows.length - 1]?.ingested_at || new Date(), eventRows.rows[eventRows.rows.length - 1]?.event_id || EventStore.newEventId()
     ]);
   }
 

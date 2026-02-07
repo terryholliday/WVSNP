@@ -41,10 +41,8 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-function ensurePhase1Event(event: DomainEvent): void {
-  if (!PHASE1_ALLOWED_EVENTS.has(event.eventType)) {
-    throw new Error(`PHASE1_EVENT_NOT_ALLOWED:${event.eventType}`);
-  }
+function isPhase1Event(event: DomainEvent): boolean {
+  return PHASE1_ALLOWED_EVENTS.has(event.eventType);
 }
 
 function applyApplicationEvent(
@@ -168,8 +166,9 @@ export async function rebuildAllProjections(pool: Pool): Promise<void> {
     }
 
     for (const event of events) {
-      ensurePhase1Event(event);
-      applyApplicationEvent(applications, event);
+      if (isPhase1Event(event)) {
+        applyApplicationEvent(applications, event);
+      }
       lastEvent = event;
     }
 
