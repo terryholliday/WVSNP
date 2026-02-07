@@ -14,6 +14,7 @@ import { Pool } from 'pg';
 import * as crypto from 'crypto';
 import { EventStore, Watermark, DomainEvent } from '../src/event-store';
 import { rebuildAllProjections } from '../src/projections/rebuild';
+import { truncateWithRetry } from './test-utils';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -65,7 +66,7 @@ describe('Phase 1 Kernel Conformance', () => {
   // =========================================================
   describe('1. Event Log Schema', () => {
     beforeAll(async () => {
-      await pool.query('TRUNCATE event_log CASCADE');
+      await truncateWithRetry(pool, 'event_log');
     });
 
     test('event_log table exists with required columns', async () => {
@@ -194,7 +195,7 @@ describe('Phase 1 Kernel Conformance', () => {
   // =========================================================
   describe('3. Append API + Server-Stamped ingestedAt', () => {
     beforeAll(async () => {
-      await pool.query('TRUNCATE event_log CASCADE');
+      await truncateWithRetry(pool, 'event_log');
     });
 
     test('append sets server-stamped ingestedAt via trigger', async () => {
@@ -289,7 +290,7 @@ describe('Phase 1 Kernel Conformance', () => {
   describe('4. Append + Replay Proof', () => {
     beforeAll(async () => {
       // Clean slate: truncate all tables to ensure isolation
-      await pool.query('TRUNCATE event_log, applications_projection, grant_balances_projection, vouchers_projection CASCADE');
+      await truncateWithRetry(pool, 'event_log, applications_projection, grant_balances_projection, vouchers_projection');
     });
 
     test('replay from genesis produces deterministic state', async () => {
@@ -357,7 +358,7 @@ describe('Phase 1 Kernel Conformance', () => {
 
     beforeAll(async () => {
       // Clean slate: truncate to ensure no leftover events
-      await pool.query('TRUNCATE event_log CASCADE');
+      await truncateWithRetry(pool, 'event_log');
       insertedEvents = [];
 
       // Insert 3 events with small gaps for distinct ingested_at

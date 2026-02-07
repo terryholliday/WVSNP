@@ -10,6 +10,7 @@ import { GrantService } from '../src/application/grant-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 import { Money, Allocator } from '../src/domain-types';
 import { sweepExpiredTentatives } from '../src/jobs/sweep-expired-tentatives';
+import { truncateWithRetry } from './test-utils';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -26,7 +27,7 @@ const grantService = new GrantService(pool, store, idempotency);
 describe('Phase 2 Conformance Tests', () => {
   beforeAll(async () => {
     // Ensure clean state
-    await pool.query('TRUNCATE event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache CASCADE');
+    await truncateWithRetry(pool, 'event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache');
   });
 
   afterAll(async () => {

@@ -9,6 +9,7 @@ import { EventStore } from '../src/event-store';
 import { OasisService } from '../src/application/oasis-service';
 import { CloseoutService } from '../src/application/closeout-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
+import { truncateWithRetry } from './test-utils';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -25,7 +26,7 @@ const closeoutService = new CloseoutService(pool, store, idempotency);
 
 describe('Phase 4 v5.2 Conformance Tests', () => {
   beforeEach(async () => {
-    await pool.query('TRUNCATE event_log, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache CASCADE');
+    await truncateWithRetry(pool, 'event_log, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache');
   });
 
   afterAll(async () => {

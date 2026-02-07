@@ -10,6 +10,7 @@ import { ClaimService } from '../src/application/claim-service';
 import { InvoiceService } from '../src/application/invoice-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 import { Money, Claim } from '../src/domain-types';
+import { truncateWithRetry } from './test-utils';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -26,7 +27,7 @@ const invoiceService = new InvoiceService(pool, store, idempotency);
 
 describe('Phase 3 v5.1 Conformance Tests', () => {
   beforeEach(async () => {
-    await pool.query('TRUNCATE event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache CASCADE');
+    await truncateWithRetry(pool, 'event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache');
   });
 
   afterAll(async () => {
