@@ -58,7 +58,12 @@ CREATE INDEX IF NOT EXISTS idx_event_log_tentative
 CREATE OR REPLACE FUNCTION stamp_ingested_at()
 RETURNS trigger AS $$
 BEGIN
-  NEW.ingested_at := clock_timestamp();
+  -- Truncate to millisecond precision so that JavaScript Date (which only
+  -- supports ms) can represent the value without loss.  This prevents the
+  -- watermark pagination comparisons from silently re-fetching the boundary
+  -- event when the sub-millisecond fraction is dropped during the JS
+  -- round-trip.
+  NEW.ingested_at := date_trunc('milliseconds', clock_timestamp());
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
