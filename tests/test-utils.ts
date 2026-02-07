@@ -1,35 +1,31 @@
 import { Pool } from 'pg';
 
 /**
- * Executes a TRUNCATE statement with retry logic for deadlock and lock-timeout errors.
+ * Cleans test tables using DELETE instead of TRUNCATE.
  *
- * Uses a dedicated client with a short lock_timeout so TRUNCATE fails fast
- * instead of waiting indefinitely for ACCESS EXCLUSIVE (which conflicts with autovacuum).
+ * TRUNCATE requires ACCESS EXCLUSIVE lock which deadlocks with autovacuum.
+ * DELETE only requires ROW EXCLUSIVE — no conflict with autovacuum, ever.
  *
- * Retryable error codes:
- *   40P01 = deadlock_detected
- *   55P03 = lock_not_available (lock_timeout exceeded)
+ * Uses session_replication_role = 'replica' to temporarily disable FK checks
+ * and immutability triggers so we can DELETE from any table in any order.
  */
 export async function truncateWithRetry(
   pool: Pool,
-  tables: string,
-  maxRetries = 5
+  tables: string
 ): Promise<void> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const client = await pool.connect();
-    try {
-      await client.query("SET lock_timeout = '3s'");
-      await client.query(`TRUNCATE ${tables} CASCADE`);
-      return;
-    } catch (err: any) {
-      const isRetryable = err?.code === '40P01' || err?.code === '55P03';
-      if (!isRetryable || attempt === maxRetries) {
-        throw err;
-      }
-      const delayMs = 200 * Math.pow(2, attempt); // 200, 400, 800, 1600, 3200ms
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    } finally {
-      client.release();
+  const tableList = tables.split(',').map((t) => t.trim());
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SET LOCAL session_replication_role = 'replica'");
+    for (const table of tableList) {
+      await client.query(`DELETE FROM ${table}`);
     }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
 }
