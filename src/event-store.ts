@@ -113,11 +113,7 @@ export class EventStore {
     }));
   }
 
-  async append(event: Omit<DomainEvent, 'ingestedAt'>): Promise<DomainEvent> {
-    assertUuidV7(event.eventId, 'eventId');
-    assertNoBigInt(event.eventData);
-
-    const sql = `
+  private static readonly APPEND_SQL = `
       INSERT INTO event_log (
         event_id,
         aggregate_type,
@@ -135,7 +131,8 @@ export class EventStore {
       RETURNING ingested_at
     `;
 
-    const result = await this.pool.query(sql, [
+  private static appendParams(event: Omit<DomainEvent, 'ingestedAt'>): unknown[] {
+    return [
       event.eventId,
       event.aggregateType,
       event.aggregateId,
@@ -147,7 +144,26 @@ export class EventStore {
       event.causationId,
       event.actorId,
       event.actorType,
-    ]);
+    ];
+  }
+
+  async append(event: Omit<DomainEvent, 'ingestedAt'>): Promise<DomainEvent> {
+    assertUuidV7(event.eventId, 'eventId');
+    assertNoBigInt(event.eventData);
+
+    const result = await this.pool.query(EventStore.APPEND_SQL, EventStore.appendParams(event));
+
+    return {
+      ...event,
+      ingestedAt: new Date(result.rows[0].ingested_at),
+    };
+  }
+
+  async appendWithClient(client: import('pg').PoolClient, event: Omit<DomainEvent, 'ingestedAt'>): Promise<DomainEvent> {
+    assertUuidV7(event.eventId, 'eventId');
+    assertNoBigInt(event.eventData);
+
+    const result = await client.query(EventStore.APPEND_SQL, EventStore.appendParams(event));
 
     return {
       ...event,
