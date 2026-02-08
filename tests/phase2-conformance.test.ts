@@ -14,13 +14,16 @@ import { Money, Allocator } from '../src/domain-types';
 import { sweepExpiredTentatives } from '../src/jobs/sweep-expired-tentatives';
 
 const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5, idleTimeoutMillis: 10_000, options: '-c lock_timeout=10000 -c statement_timeout=30000' })
   : new Pool({
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5433', 10),
       database: process.env.DB_NAME || 'wvsnp_test',
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
+      max: 5,
+      idleTimeoutMillis: 10_000,
+      options: '-c lock_timeout=10000 -c statement_timeout=30000',
     });
 
 const store = new EventStore(pool);
@@ -36,8 +39,30 @@ describe('Phase 2 Conformance Tests', () => {
   }, 30_000);
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache CASCADE');
-  });
+    // Use TRUNCATE with retry mechanism to handle transient lock contention
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1s
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await pool.query('TRUNCATE event_log, grant_balances_projection, vouchers_projection, allocators_projection, idempotency_cache CASCADE');
+        return; // Success
+      } catch (error: any) {
+        if (attempt === maxRetries) {
+          throw error; // Re-throw on final attempt
+        }
+        
+        // If it's a lock contention error, wait and retry
+        if (error.message.includes('deadlock') || error.message.includes('lock')) {
+          await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
+          continue;
+        }
+        
+        // For other errors, don't retry
+        throw error;
+      }
+    }
+  }, 30_000);
 
   afterAll(async () => {
     await pool.end();
@@ -238,10 +263,105 @@ describe('Phase 2 Conformance Tests', () => {
     }
   });
 
-  test('TEST 10: Lock Order - Command handlers acquire locks in correct order', async () => {
-    // This test verifies lock order through code inspection
-    // Lock order: Voucher → Grant Bucket → Allocator
-    // Actual lock testing requires concurrent transactions (integration test)
-    expect(true).toBe(true); // Placeholder - verify via code review
+  test('TEST 10: Lock Order - Concurrent voucher issuance does not deadlock', async () => {
+    // Lock order: Grant Bucket → Allocator (for new vouchers)
+    // If lock order were reversed, concurrent issuance would deadlock.
+    // This test proves correct ordering by running two concurrent issuances
+    // against the same grant and verifying both complete without deadlock.
+
+    const grantId = EventStore.newEventId();
+    const grantCycleId = 'FY2026';
+    const actorId = crypto.randomUUID();
+    const correlationId = crypto.randomUUID();
+
+    // Seed GRANT_CREATED event
+    await store.append({
+      eventId: EventStore.newEventId(),
+      aggregateType: 'GRANT',
+      aggregateId: grantId,
+      eventType: 'GRANT_CREATED',
+      eventData: {
+        awardedAmountCents: '1000000',
+        matchCommitmentCents: '250000',
+        rateNumeratorCents: '80',
+        rateDenominatorCents: '100',
+        lirpEnabled: false,
+      },
+      occurredAt: new Date(),
+      grantCycleId,
+      correlationId,
+      causationId: null,
+      actorId: actorId as any,
+      actorType: 'ADMIN',
+    });
+
+    // Seed grant balance projection
+    await pool.query(
+      `INSERT INTO grant_balances_projection (
+        grant_id, grant_cycle_id, bucket_type,
+        awarded_cents, available_cents, encumbered_cents, liquidated_cents, released_cents,
+        rate_numerator_cents, rate_denominator_cents,
+        matching_committed_cents, matching_reported_cents,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES ($1, $2, 'GENERAL', 1000000, 1000000, 0, 0, 0, 80, 100, 250000, 0, NOW(), NOW(), $3)`,
+      [grantId, grantCycleId, EventStore.newEventId()]
+    );
+
+    // Seed allocator
+    const allocatorId = Allocator.createId(grantCycleId, 'COUNTY');
+    await pool.query(
+      `INSERT INTO allocators_projection (
+        allocator_id, grant_cycle_id, county_code, next_sequence,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES ($1, $2, 'COUNTY', 1, NOW(), NOW(), $3)`,
+      [allocatorId, grantCycleId, EventStore.newEventId()]
+    );
+
+    // Issue two vouchers concurrently against the same grant
+    const voucherId1 = crypto.randomUUID();
+    const voucherId2 = crypto.randomUUID();
+
+    const issueRequest = (voucherId: string, key: string) => grantService.issueVoucherOnline({
+      idempotencyKey: key,
+      grantId: grantId as any,
+      voucherId: voucherId as any,
+      maxReimbursementCents: Money.fromBigInt(50000n),
+      isLIRP: false,
+      recipientType: 'SHELTER',
+      recipientName: 'Test Recipient',
+      animalType: 'DOG',
+      procedureType: 'SPAY',
+      expiresAt: new Date(Date.now() + 90 * 86400000),
+      coPayRequired: false,
+      coPayAmountCents: undefined,
+      actorId,
+      actorType: 'APPLICANT',
+      correlationId,
+    });
+
+    // Run concurrently — if lock order is wrong, this deadlocks and times out
+    const results = await Promise.allSettled([
+      issueRequest(voucherId1, 'lock-test-v1'),
+      issueRequest(voucherId2, 'lock-test-v2'),
+    ]);
+
+    // Both should succeed (no deadlock)
+    const successes = results.filter(r => r.status === 'fulfilled');
+    expect(successes.length).toBe(2);
+
+    // Verify both vouchers created
+    const vouchers = await pool.query(
+      'SELECT voucher_id FROM vouchers_projection WHERE grant_id = $1',
+      [grantId]
+    );
+    expect(vouchers.rows.length).toBe(2);
+
+    // Verify grant balance reduced by both voucher amounts
+    const balance = await pool.query(
+      'SELECT available_cents, encumbered_cents FROM grant_balances_projection WHERE grant_id = $1 AND bucket_type = $2',
+      [grantId, 'GENERAL']
+    );
+    expect(BigInt(balance.rows[0].available_cents)).toBe(900000n); // 1000000 - 50000 - 50000
+    expect(BigInt(balance.rows[0].encumbered_cents)).toBe(100000n); // 50000 + 50000
   });
 });
