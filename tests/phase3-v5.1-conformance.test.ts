@@ -12,15 +12,19 @@ import { ClaimService } from '../src/application/claim-service';
 import { InvoiceService } from '../src/application/invoice-service';
 import { IdempotencyService } from '../src/application/idempotency-service';
 import { Money, Claim } from '../src/domain-types';
+import { rebuildAllProjections } from '../src/projections/rebuild';
 
 const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  ? new Pool({ connectionString: process.env.DATABASE_URL, max: 5, idleTimeoutMillis: 10_000, options: '-c lock_timeout=10000 -c statement_timeout=30000' })
   : new Pool({
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5433', 10),
       database: process.env.DB_NAME || 'wvsnp_test',
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
+      max: 5,
+      idleTimeoutMillis: 10_000,
+      options: '-c lock_timeout=10000 -c statement_timeout=30000',
     });
 
 const store = new EventStore(pool);
@@ -37,8 +41,30 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
   }, 30_000);
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache CASCADE');
-  });
+    // Use TRUNCATE with retry mechanism to handle transient lock contention
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1s
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await pool.query('TRUNCATE event_log, claims_projection, invoices_projection, vet_clinics_projection, vouchers_projection, invoice_adjustments_projection, payments_projection, idempotency_cache CASCADE');
+        return; // Success
+      } catch (error: any) {
+        if (attempt === maxRetries) {
+          throw error; // Re-throw on final attempt
+        }
+        
+        // If it's a lock contention error, wait and retry
+        if (error.message.includes('deadlock') || error.message.includes('lock')) {
+          await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
+          continue;
+        }
+        
+        // For other errors, don't retry
+        throw error;
+      }
+    }
+  }, 30_000);
 
   afterAll(async () => {
     await pool.end();
@@ -118,13 +144,85 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
    * Expect: Replay from genesis → same invoice set and totals
    */
   test('TEST 2: Invoice generation replay determinism', async () => {
-    // This test requires full event log replay infrastructure
-    // Placeholder for now - would need to:
-    // 1. Generate invoices at watermark W
-    // 2. Drop projections
-    // 3. Rebuild from event log
-    // 4. Verify identical invoice totals
-    expect(true).toBe(true); // TODO: Implement full replay test
+    const grantCycleId = 'FY2026';
+    const actorId = crypto.randomUUID();
+    const correlationId = crypto.randomUUID();
+    const clinicId = '11111111-1111-1111-1111-111111111111';
+    const voucherId = '22222222-2222-2222-2222-222222222222';
+
+    // Setup clinic
+    await pool.query(`
+      INSERT INTO vet_clinics_projection (
+        clinic_id, clinic_name, status, license_status, license_number, license_expires_at,
+        oasis_vendor_code, payment_info, registered_at, suspended_at, reinstated_at,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES (
+        $1, 'Replay Test Clinic', 'ACTIVE', 'VALID', 'LIC-RPL', '2027-12-31',
+        NULL, NULL, NOW(), NULL, NULL, NOW(), NOW(), gen_random_uuid()
+      )
+    `, [clinicId]);
+
+    // Setup voucher
+    await pool.query(`
+      INSERT INTO vouchers_projection (
+        voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp,
+        tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES (
+        $1, '33333333-3333-3333-3333-333333333333',
+        'WVSNP-REPLAY-001', NULL, 'ISSUED', 50000, false,
+        NULL, '2026-12-31', '2026-01-01', NULL, NULL, NULL, NOW(), NOW(), gen_random_uuid()
+      )
+    `, [voucherId]);
+
+    // Step 1: Submit a claim via service (creates CLAIM_SUBMITTED event)
+    const claimResult = await claimService.submitClaim({
+      idempotencyKey: 'replay-claim-001',
+      grantCycleId,
+      voucherId: voucherId as any,
+      clinicId,
+      procedureCode: 'SPAY',
+      dateOfService: new Date('2026-01-15'),
+      submittedAmountCents: Money.fromBigInt(40000n),
+      artifacts: {
+        procedureReportId: 'artifact-rpl-001',
+        clinicInvoiceId: 'artifact-rpl-002',
+      },
+      rabiesIncluded: false,
+      actorId,
+      actorType: 'APPLICANT' as const,
+      correlationId,
+    });
+    expect(claimResult.claimId).toBeDefined();
+
+    // Step 2: Capture claim state before rebuild
+    const beforeClaim = await pool.query(
+      'SELECT claim_id, status, submitted_amount_cents FROM claims_projection WHERE claim_id = $1',
+      [claimResult.claimId]
+    );
+    expect(beforeClaim.rows.length).toBe(1);
+    const beforeStatus = beforeClaim.rows[0].status;
+    const beforeAmount = beforeClaim.rows[0].submitted_amount_cents;
+
+    // Step 3: Rebuild all projections from event log
+    const rebuildResult = await rebuildAllProjections(pool);
+    expect(rebuildResult.eventsReplayed).toBeGreaterThan(0);
+
+    // Step 4: Verify claim projection is identical after rebuild
+    const afterClaim = await pool.query(
+      'SELECT claim_id, status, submitted_amount_cents FROM claims_projection WHERE claim_id = $1',
+      [claimResult.claimId]
+    );
+    expect(afterClaim.rows.length).toBe(1);
+    expect(afterClaim.rows[0].status).toBe(beforeStatus);
+    expect(afterClaim.rows[0].submitted_amount_cents).toBe(beforeAmount);
+
+    // Step 5: Verify event log is untouched (immutable)
+    const eventCount = await pool.query(
+      "SELECT COUNT(*) FROM event_log WHERE event_type = 'CLAIM_SUBMITTED' AND aggregate_id = $1",
+      [claimResult.claimId]
+    );
+    expect(parseInt(eventCount.rows[0].count)).toBe(1);
   });
 
   /**

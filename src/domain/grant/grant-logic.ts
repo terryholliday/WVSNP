@@ -12,10 +12,26 @@ export interface BucketState {
   matchingReportedCents: MoneyCents;
 }
 
-export type GrantState = Map<'GENERAL' | 'LIRP', BucketState>;
+export type GrantStatus = 'CREATED' | 'AGREEMENT_SIGNED' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+
+export interface GrantMetadata {
+  grantId: string;
+  grantCycleId: string;
+  applicationId: string | null;
+  status: GrantStatus;
+  lirpEnabled: boolean;
+  lirpMustHonor: boolean;
+  agreementSignedAt: Date | null;
+  activatedAt: Date | null;
+  suspendedAt: Date | null;
+  reinstatedAt: Date | null;
+  closedAt: Date | null;
+}
+
+export type GrantState = Map<'GENERAL' | 'LIRP', BucketState> & { metadata?: GrantMetadata };
 
 export function createInitialGrantState(): GrantState {
-  return new Map();
+  return new Map() as GrantState;
 }
 
 export function applyGrantEvent(state: GrantState, event: any): void {
@@ -52,9 +68,64 @@ export function applyGrantEvent(state: GrantState, event: any): void {
         releasedCents: Money.fromBigInt(0n),
         rateNumeratorCents,
         rateDenominatorCents,
-        matchingCommittedCents: Money.fromBigInt(0n), // LIRP no matching?
+        matchingCommittedCents: Money.fromBigInt(0n),
         matchingReportedCents: Money.fromBigInt(0n),
       });
+    }
+
+    state.metadata = {
+      grantId: eventData.grantId as string || '',
+      grantCycleId: eventData.grantCycleId as string || '',
+      applicationId: eventData.applicationId as string || null,
+      status: 'CREATED',
+      lirpEnabled,
+      lirpMustHonor: false,
+      agreementSignedAt: null,
+      activatedAt: null,
+      suspendedAt: null,
+      reinstatedAt: null,
+      closedAt: null,
+    };
+  }
+
+  if (eventType === 'GRANT_AGREEMENT_SIGNED') {
+    if (state.metadata) {
+      state.metadata.status = 'AGREEMENT_SIGNED';
+      state.metadata.agreementSignedAt = event.ingestedAt || new Date();
+    }
+  }
+
+  if (eventType === 'GRANT_ACTIVATED') {
+    if (state.metadata) {
+      state.metadata.status = 'ACTIVE';
+      state.metadata.activatedAt = event.ingestedAt || new Date();
+    }
+  }
+
+  if (eventType === 'GRANT_SUSPENDED') {
+    if (state.metadata) {
+      state.metadata.status = 'SUSPENDED';
+      state.metadata.suspendedAt = event.ingestedAt || new Date();
+    }
+  }
+
+  if (eventType === 'GRANT_REINSTATED') {
+    if (state.metadata) {
+      state.metadata.status = 'ACTIVE';
+      state.metadata.reinstatedAt = event.ingestedAt || new Date();
+    }
+  }
+
+  if (eventType === 'GRANT_CLOSED') {
+    if (state.metadata) {
+      state.metadata.status = 'CLOSED';
+      state.metadata.closedAt = event.ingestedAt || new Date();
+    }
+  }
+
+  if (eventType === 'LIRP_MUST_HONOR_ENFORCED') {
+    if (state.metadata) {
+      state.metadata.lirpMustHonor = true;
     }
   }
 

@@ -199,8 +199,8 @@ export interface ApplicationSubmittedEvent {
   actorType: 'PUBLIC_APPLICANT';
 }
 
-export interface ApplicationEvidenceAttachedEvent {
-  eventType: 'APPLICATION_EVIDENCE_ATTACHED';
+export interface AttachmentAddedEvent {
+  eventType: 'ATTACHMENT_ADDED' | 'APPLICATION_EVIDENCE_ATTACHED'; // legacy compat
   aggregateId: ApplicationId;
   aggregateType: 'APPLICATION';
   eventData: {
@@ -279,6 +279,52 @@ export interface ApplicationDeniedEvent {
   actorType: 'ADMIN';
 }
 
+export interface ApplicationSectionCompletedEvent {
+  eventType: 'APPLICATION_SECTION_COMPLETED';
+  aggregateId: ApplicationId;
+  aggregateType: 'APPLICATION';
+  eventData: {
+    section: ApplicationSection;
+  };
+  occurredAt: Date;
+  grantCycleId: string;
+  correlationId: string;
+  causationId: string;
+  actorId: string;
+  actorType: 'PUBLIC_APPLICANT';
+}
+
+export interface ApplicationWaitlistedEvent {
+  eventType: 'APPLICATION_WAITLISTED';
+  aggregateId: ApplicationId;
+  aggregateType: 'APPLICATION';
+  eventData: {
+    reason: string;
+    waitlistPosition: number | null;
+  };
+  occurredAt: Date;
+  grantCycleId: string;
+  correlationId: string;
+  causationId: string;
+  actorId: string;
+  actorType: 'ADMIN';
+}
+
+export interface ApplicationTokenConsumedEvent {
+  eventType: 'APPLICATION_TOKEN_CONSUMED';
+  aggregateId: ApplicationId;
+  aggregateType: 'APPLICATION';
+  eventData: {
+    tokenId: string;
+  };
+  occurredAt: Date;
+  grantCycleId: string;
+  correlationId: string;
+  causationId: string;
+  actorId: string;
+  actorType: 'SYSTEM';
+}
+
 export interface FraudSignalDetectedEvent {
   eventType: 'FRAUD_SIGNAL_DETECTED';
   aggregateId: ApplicationId;
@@ -302,8 +348,11 @@ export interface FraudSignalDetectedEvent {
 export type ApplicationEvent =
   | ApplicationStartedEvent
   | ApplicationSubmittedEvent
-  | ApplicationEvidenceAttachedEvent
+  | AttachmentAddedEvent
+  | ApplicationSectionCompletedEvent
   | ApplicationScoredEvent
   | ApplicationAwardedEvent
   | ApplicationDeniedEvent
+  | ApplicationWaitlistedEvent
+  | ApplicationTokenConsumedEvent
   | FraudSignalDetectedEvent;

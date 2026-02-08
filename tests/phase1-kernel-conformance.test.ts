@@ -121,6 +121,9 @@ const pool = new Pool({
   database: process.env.DB_NAME || 'wvsnp_test',
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
+  max: 5,
+  idleTimeoutMillis: 10_000,
+  options: '-c lock_timeout=10000 -c statement_timeout=30000',
 });
 
 // ---------------------------------------------------------------------------
@@ -144,7 +147,7 @@ describe('Phase 1 Kernel Conformance', () => {
     if (!check.rows[0].al) {
       throw new Error('MISSING_SCHEMA: artifact_log not found. Run schema.sql against wvsnp_test first.');
     }
-  }, 30_000);
+  }, 120_000);
 
   beforeEach(async () => {
     await pool.query('BEGIN');
@@ -716,7 +719,7 @@ describe('Phase 1 Kernel Conformance', () => {
         event_data: { applicationId: appId, granteeId: uuidv4(), cycleId: 'FY2026' },
       });
       expect(row.event_type).toBe('APPLICATION_STARTED');
-    });
+    }, 10_000);
 
     test('event_type regex enforces SCREAMING_SNAKE_CASE at application layer', () => {
       const EVENT_TYPE_REGEX = /^[A-Z0-9_]+$/;
@@ -768,14 +771,14 @@ describe('Phase 1 Kernel Conformance', () => {
       const ingestedAt = new Date(row.ingested_at).getTime();
 
       // occurred_at should reflect the client-provided past time
-      expect(occurredAt).toBe(new Date(pastTime).getTime());
+      expect(occurredAt).toBe(Date.parse(pastTime));
 
       // ingested_at should be server-stamped (recent)
-      expect(ingestedAt).toBeGreaterThan(new Date('2025-01-01').getTime());
+      expect(ingestedAt).toBeGreaterThan(occurredAt);
 
       // They must be different
       expect(occurredAt).not.toBe(ingestedAt);
-    });
+    }, 10_000);
 
     test('no createdAt or updatedAt columns in event_log (LAW 4.5)', async () => {
       const result = await pool.query(

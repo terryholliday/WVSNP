@@ -330,7 +330,7 @@ CREATE TABLE IF NOT EXISTS invoice_adjustments_projection (
   target_invoice_id UUID,
   amount_cents BIGINT NOT NULL,
   reason VARCHAR(255),
-  created_at TIMESTAMPTZ NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL,
   applied_at TIMESTAMPTZ,
   rebuilt_at TIMESTAMPTZ NOT NULL,
   watermark_ingested_at TIMESTAMPTZ NOT NULL,

@@ -21,7 +21,7 @@ export interface AdjustmentState {
   targetInvoiceId: string | null;
   amountCents: MoneyCents;
   reason: string | null;
-  createdAt: Date | null;
+  recordedAt: Date | null;
   appliedAt: Date | null;
 }
 
@@ -75,7 +75,7 @@ export function createInitialAdjustmentState(adjustmentId: string, sourceInvoice
     targetInvoiceId: null,
     amountCents: Money.fromBigInt(0n),
     reason: null,
-    createdAt: null,
+    recordedAt: null,
     appliedAt: null,
   };
 }
@@ -86,7 +86,7 @@ export function applyAdjustmentEvent(state: AdjustmentState, event: any): void {
   if (eventType === 'INVOICE_ADJUSTMENT_CREATED') {
     state.amountCents = Money.fromJSON(eventData.amountCents as string);
     state.reason = eventData.reason as string;
-    state.createdAt = ingestedAt;
+    state.recordedAt = ingestedAt;
   }
 
   if (eventType === 'INVOICE_ADJUSTMENT_APPLIED') {

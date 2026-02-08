@@ -12,7 +12,7 @@ import {
   ApplicationEvent,
   ApplicationStartedEvent,
   ApplicationSubmittedEvent,
-  ApplicationEvidenceAttachedEvent,
+  AttachmentAddedEvent,
   FraudSignalDetectedEvent,
   FraudSeverity
 } from '../domain/application/application-types';
@@ -169,12 +169,12 @@ export class ApplicationService {
         throw new Error('CANNOT_ATTACH_EVIDENCE_TO_SUBMITTED_APPLICATION');
       }
 
-      // Emit APPLICATION_EVIDENCE_ATTACHED event
+      // Emit ATTACHMENT_ADDED event (canonical spec name)
       const event: Omit<DomainEvent, 'ingestedAt'> = {
         eventId: EventStore.newEventId(),
         aggregateType: 'APPLICATION',
         aggregateId: command.applicationId,
-        eventType: 'APPLICATION_EVIDENCE_ATTACHED',
+        eventType: 'ATTACHMENT_ADDED',
         eventData: {
           evidenceRefId: command.evidenceRefId,
           evidenceType: command.evidenceType,

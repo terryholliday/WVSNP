@@ -30,6 +30,45 @@ export const generateOasisExportSchema = z.object({
   watermarkEventId: z.string().uuid()
 });
 
+// Submit OASIS Batch Schema
+export const submitOasisBatchSchema = z.object({
+  submissionMethod: z.enum(['MANUAL_UPLOAD', 'API']),
+});
+
+// Acknowledge OASIS Batch Schema
+export const acknowledgeOasisBatchSchema = z.object({
+  oasisRefId: z.string().min(1),
+  acceptedAt: z.string().datetime(),
+  notes: z.string().optional(),
+});
+
+// Reject OASIS Batch Schema
+export const rejectOasisBatchSchema = z.object({
+  rejectionReason: z.string().min(1),
+  rejectionCode: z.string().optional(),
+});
+
+// Void OASIS Batch Schema
+export const voidOasisBatchSchema = z.object({
+  reason: z.string().min(1),
+});
+
+// Closeout Reconcile Schema
+export const closeoutReconcileSchema = z.object({
+  watermarkIngestedAt: z.string().datetime(),
+  watermarkEventId: z.string().uuid(),
+});
+
+// Closeout Audit Hold Schema
+export const closeoutAuditHoldSchema = z.object({
+  reason: z.string().min(1),
+});
+
+// Closeout Audit Resolve Schema
+export const closeoutAuditResolveSchema = z.object({
+  resolution: z.string().min(1),
+});
+
 // List Claims Query Schema
 export const listClaimsAdminQuerySchema = z.object({
   status: z.enum(['SUBMITTED', 'APPROVED', 'DENIED', 'ADJUSTED', 'INVOICED']).optional(),

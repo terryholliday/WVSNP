@@ -90,7 +90,17 @@ export function applyVoucherEvent(state: VoucherState, event: any): void {
     state.voidedAt = ingestedAt;
   }
 
-  // Add VOUCHER_AMENDED if needed
+  if (eventType === 'VOUCHER_AMENDED') {
+    if (eventData.maxReimbursementCents) {
+      state.maxReimbursementCents = Money.fromJSON(eventData.maxReimbursementCents as string);
+    }
+    if (eventData.expiresAt) {
+      state.expiresAt = new Date(eventData.expiresAt as string);
+    }
+    if (eventData.isLIRP !== undefined) {
+      state.isLIRP = eventData.isLIRP as boolean;
+    }
+  }
 }
 
 export function checkVoucherInvariant(state: VoucherState): void {

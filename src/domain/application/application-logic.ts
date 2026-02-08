@@ -5,7 +5,7 @@ import {
   ApplicationId,
   GranteeId,
   ApplicationSection,
-  FraudSignal
+  FraudSignal,
 } from './application-types';
 
 /**
@@ -65,7 +65,17 @@ export function applyApplicationEvent(state: ApplicationState, event: Applicatio
         submittedAt: event.occurredAt
       };
 
-    case 'APPLICATION_EVIDENCE_ATTACHED':
+    case 'APPLICATION_SECTION_COMPLETED': {
+      const updatedSections = { ...state.sectionsCompleted, [event.eventData.section]: true };
+      return {
+        ...state,
+        sectionsCompleted: updatedSections,
+        completenessPercent: calculateCompleteness(updatedSections)
+      };
+    }
+
+    case 'ATTACHMENT_ADDED':
+    case 'APPLICATION_EVIDENCE_ATTACHED': // legacy compat
       return {
         ...state,
         evidenceRefs: [...state.evidenceRefs, event.eventData.evidenceRefId]
@@ -91,6 +101,16 @@ export function applyApplicationEvent(state: ApplicationState, event: Applicatio
         status: 'DENIED',
         decisionAt: event.occurredAt
       };
+
+    case 'APPLICATION_WAITLISTED':
+      return {
+        ...state,
+        status: 'WAITLISTED',
+        decisionAt: event.occurredAt
+      };
+
+    case 'APPLICATION_TOKEN_CONSUMED':
+      return state; // Metadata event — no state change
 
     case 'FRAUD_SIGNAL_DETECTED':
       const newSignal: FraudSignal = {
