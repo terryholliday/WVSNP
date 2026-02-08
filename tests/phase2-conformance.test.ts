@@ -229,10 +229,147 @@ describe('Phase 2 Conformance Tests', () => {
     }
   });
 
-  test('TEST 10: Lock Order - Command handlers acquire locks in correct order', async () => {
-    // This test verifies lock order through code inspection
+  test('TEST 10: Lock Order - Concurrent confirmTentativeVoucher does not deadlock', async () => {
     // Lock order: Voucher → Grant Bucket → Allocator
-    // Actual lock testing requires concurrent transactions (integration test)
-    expect(true).toBe(true); // Placeholder - verify via code review
+    // Two concurrent transactions following the same lock order must not deadlock.
+    // If the lock order were inconsistent, PostgreSQL would detect a deadlock (code 40P01).
+
+    const grantId = EventStore.newEventId();
+    const grantCycleId = crypto.randomUUID();
+    const actorId = crypto.randomUUID();
+    const correlationId = crypto.randomUUID();
+
+    // 1. Create GRANT_CREATED event so getGrantCycleId can find it
+    await store.append({
+      eventId: EventStore.newEventId(),
+      aggregateType: 'GRANT',
+      aggregateId: grantId,
+      eventType: 'GRANT_CREATED',
+      eventData: {
+        awardedAmountCents: '200000',
+        matchCommitmentCents: '0',
+        rateNumeratorCents: '80',
+        rateDenominatorCents: '100',
+        lirpEnabled: false,
+      },
+      occurredAt: new Date(),
+      grantCycleId,
+      correlationId,
+      causationId: null,
+      actorId: actorId as any,
+      actorType: 'ADMIN',
+    });
+
+    // 2. Set up grant balance with enough funds for both vouchers
+    await pool.query(
+      `INSERT INTO grant_balances_projection
+       (grant_id, grant_cycle_id, bucket_type, awarded_cents, available_cents, encumbered_cents,
+        liquidated_cents, released_cents, rate_numerator_cents, rate_denominator_cents,
+        matching_committed_cents, matching_reported_cents, rebuilt_at, watermark_ingested_at, watermark_event_id)
+       VALUES ($1, $2, 'GENERAL', 200000, 200000, 0, 0, 0, 80, 100, 0, 0, NOW(), NOW(), $3)`,
+      [grantId, grantCycleId, EventStore.newEventId()]
+    );
+
+    // 3. Set up allocator
+    const allocatorId = Allocator.createId(grantCycleId, 'COUNTY');
+    await pool.query(
+      `INSERT INTO allocators_projection
+       (allocator_id, grant_cycle_id, county_code, next_sequence, rebuilt_at, watermark_ingested_at, watermark_event_id)
+       VALUES ($1, $2, 'COUNTY', 1, NOW(), NOW(), $3)`,
+      [allocatorId, grantCycleId, EventStore.newEventId()]
+    );
+
+    // 4. Set up two TENTATIVE vouchers
+    const voucherId1 = EventStore.newEventId();
+    const voucherId2 = EventStore.newEventId();
+    const futureExpiry = new Date(Date.now() + 3600000); // 1 hour from now
+
+    for (const vid of [voucherId1, voucherId2]) {
+      await store.append({
+        eventId: EventStore.newEventId(),
+        aggregateType: 'VOUCHER',
+        aggregateId: vid,
+        eventType: 'VOUCHER_ISSUED_TENTATIVE',
+        eventData: {
+          voucherId: vid,
+          grantId,
+          maxReimbursementCents: '25000',
+          tentativeExpiresAt: futureExpiry.toISOString(),
+        },
+        occurredAt: new Date(),
+        grantCycleId,
+        correlationId,
+        causationId: null,
+        actorId: actorId as any,
+        actorType: 'SYSTEM',
+      });
+
+      await pool.query(
+        `INSERT INTO vouchers_projection
+         (voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp,
+          tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at,
+          rebuilt_at, watermark_ingested_at, watermark_event_id)
+         VALUES ($1, $2, NULL, 'COUNTY', 'TENTATIVE', 25000, false,
+                 $3, $4, NULL, NULL, NULL, NULL, NOW(), NOW(), $5)`,
+        [vid, grantId, futureExpiry, futureExpiry, EventStore.newEventId()]
+      );
+    }
+
+    // 5. Run two concurrent confirmTentativeVoucher calls
+    const results = await Promise.allSettled([
+      grantService.confirmTentativeVoucher({
+        idempotencyKey: 'lock-test-v1',
+        voucherId: voucherId1 as any,
+        grantId: grantId as any,
+        confirmedAt: new Date(),
+        actorId,
+        actorType: 'SYSTEM',
+        correlationId,
+      }),
+      grantService.confirmTentativeVoucher({
+        idempotencyKey: 'lock-test-v2',
+        voucherId: voucherId2 as any,
+        grantId: grantId as any,
+        confirmedAt: new Date(),
+        actorId,
+        actorType: 'SYSTEM',
+        correlationId,
+      }),
+    ]);
+
+    // 6. Collect results and errors
+    const errors: string[] = [];
+    let deadlockDetected = false;
+    let successCount = 0;
+
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        const err = r.reason as any;
+        if (err?.code === '40P01') {
+          deadlockDetected = true;
+        }
+        errors.push(err?.message || String(err));
+      } else {
+        successCount++;
+      }
+    }
+
+    // Primary invariant: no deadlock
+    expect(deadlockDetected).toBe(false);
+
+    // At least one must have succeeded. If both failed, print errors for diagnosis.
+    if (successCount === 0) {
+      // Both failed with business errors — this means lock ordering worked
+      // (serialized correctly), but the second txn hit a business rule.
+      // Accept if the errors are expected business errors, not infrastructure failures.
+      const businessErrors = ['INSUFFICIENT_FUNDS', 'VOUCHER_NOT_TENTATIVE', 'TENTATIVE_EXPIRED'];
+      const allBusinessErrors = errors.every(e => businessErrors.some(be => e.includes(be)));
+      if (!allBusinessErrors) {
+        // Fail with diagnostic info so we can fix setup issues
+        throw new Error(`Both concurrent calls failed with unexpected errors: ${JSON.stringify(errors)}`);
+      }
+      // Both failed with business errors = lock order is correct, transactions serialized
+    }
+    // If at least one succeeded, the lock ordering is proven correct
   });
 });

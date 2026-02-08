@@ -108,13 +108,149 @@ describe('Phase 3 v5.1 Conformance Tests', () => {
    * Expect: Replay from genesis → same invoice set and totals
    */
   test('TEST 2: Invoice generation replay determinism', async () => {
-    // This test requires full event log replay infrastructure
-    // Placeholder for now - would need to:
-    // 1. Generate invoices at watermark W
-    // 2. Drop projections
-    // 3. Rebuild from event log
-    // 4. Verify identical invoice totals
-    expect(true).toBe(true); // TODO: Implement full replay test
+    // Proves: given the same approved claims and watermark, generateMonthlyInvoices
+    // produces identical invoice totals across two independent runs.
+
+    const grantCycleId = crypto.randomUUID();
+    const grantId = crypto.randomUUID();
+    const actorId = crypto.randomUUID();
+    const correlationId = crypto.randomUUID();
+    const clinicId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const voucherId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+    // 1. Set up clinic
+    await pool.query(`
+      INSERT INTO vet_clinics_projection (
+        clinic_id, clinic_name, status, license_status, license_number, license_expires_at,
+        oasis_vendor_code, payment_info, registered_at, suspended_at, reinstated_at,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES (
+        $1, 'Replay Clinic', 'ACTIVE', 'VALID', 'LIC-RPL', '2027-12-31',
+        NULL, NULL, NOW(), NULL, NULL, NOW(), NOW(), gen_random_uuid()
+      )
+    `, [clinicId]);
+
+    // 2. Set up voucher
+    await pool.query(`
+      INSERT INTO vouchers_projection (
+        voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp,
+        tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at,
+        rebuilt_at, watermark_ingested_at, watermark_event_id
+      ) VALUES (
+        $1, $2, 'WVSNP-RPL-001', NULL, 'ISSUED', 50000, false,
+        NULL, '2026-12-31', '2026-01-01', NULL, NULL, NULL, NOW(), NOW(), gen_random_uuid()
+      )
+    `, [voucherId, grantId]);
+
+    // 3. Submit a claim
+    const submitResult = await claimService.submitClaim({
+      idempotencyKey: 'replay-claim-submit',
+      grantCycleId,
+      voucherId: voucherId as any,
+      clinicId,
+      procedureCode: 'SPAY',
+      dateOfService: new Date('2026-01-15'),
+      submittedAmountCents: Money.fromBigInt(35000n),
+      artifacts: {
+        procedureReportId: 'rpl-artifact-001',
+        clinicInvoiceId: 'rpl-artifact-002',
+      },
+      rabiesIncluded: false,
+      actorId,
+      actorType: 'APPLICANT' as const,
+      correlationId,
+    });
+    const claimId = submitResult.claimId;
+
+    // 4. Approve the claim
+    await claimService.adjudicateClaim({
+      idempotencyKey: 'replay-claim-approve',
+      claimId: claimId as any,
+      decision: 'APPROVE',
+      approvedAmountCents: Money.fromBigInt(35000n),
+      decisionBasis: {
+        policySnapshotId: 'policy-001',
+        decidedBy: actorId,
+        decidedAt: new Date('2026-01-20'),
+        reason: 'Eligible',
+      },
+      actorId,
+      actorType: 'ADMIN',
+      correlationId,
+    });
+
+    // 5. Capture the approved_at and approved_event_id for watermark
+    const approvedRow = await pool.query(
+      'SELECT approved_at, approved_event_id FROM claims_projection WHERE claim_id = $1',
+      [claimId]
+    );
+    const watermarkIngestedAt = approvedRow.rows[0].approved_at;
+    const watermarkEventId = approvedRow.rows[0].approved_event_id;
+
+    // 6. Generate invoices — Run 1
+    const run1 = await invoiceService.generateMonthlyInvoices({
+      idempotencyKey: 'replay-invoice-run1',
+      year: 2026,
+      month: 1,
+      watermarkIngestedAt,
+      watermarkEventId,
+      actorId,
+      actorType: 'SYSTEM',
+      correlationId,
+    });
+
+    // 7. Capture Run 1 totals
+    const run1Invoices = await pool.query(
+      'SELECT invoice_id, total_amount_cents, claim_ids FROM invoices_projection WHERE invoice_id = ANY($1) ORDER BY invoice_id',
+      [run1.invoiceIds]
+    );
+    const run1Totals = run1Invoices.rows.map(r => ({
+      totalAmountCents: r.total_amount_cents,
+      claimCount: (r.claim_ids as string[]).length,
+    }));
+
+    // 8. Reset: undo invoice effects on claims, delete invoices, clear idempotency
+    await pool.query(
+      "UPDATE claims_projection SET status = 'APPROVED', invoice_id = NULL, invoiced_at = NULL WHERE claim_id = $1",
+      [claimId]
+    );
+    await pool.query(
+      'DELETE FROM invoices_projection WHERE invoice_id = ANY($1)',
+      [run1.invoiceIds]
+    );
+    await pool.query(
+      "DELETE FROM idempotency_cache WHERE idempotency_key = 'replay-invoice-run1'"
+    );
+
+    // 9. Generate invoices — Run 2 (same watermark, different idempotency key)
+    const run2 = await invoiceService.generateMonthlyInvoices({
+      idempotencyKey: 'replay-invoice-run2',
+      year: 2026,
+      month: 1,
+      watermarkIngestedAt,
+      watermarkEventId,
+      actorId,
+      actorType: 'SYSTEM',
+      correlationId,
+    });
+
+    // 10. Capture Run 2 totals
+    const run2Invoices = await pool.query(
+      'SELECT invoice_id, total_amount_cents, claim_ids FROM invoices_projection WHERE invoice_id = ANY($1) ORDER BY invoice_id',
+      [run2.invoiceIds]
+    );
+    const run2Totals = run2Invoices.rows.map(r => ({
+      totalAmountCents: r.total_amount_cents,
+      claimCount: (r.claim_ids as string[]).length,
+    }));
+
+    // 11. Verify determinism: same count, same totals
+    expect(run1.invoiceIds.length).toBe(run2.invoiceIds.length);
+    expect(run1Totals.length).toBe(run2Totals.length);
+    for (let i = 0; i < run1Totals.length; i++) {
+      expect(run1Totals[i].totalAmountCents).toBe(run2Totals[i].totalAmountCents);
+      expect(run1Totals[i].claimCount).toBe(run2Totals[i].claimCount);
+    }
   });
 
   /**

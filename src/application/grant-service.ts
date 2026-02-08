@@ -157,8 +157,12 @@ export class GrantService {
       await client.query('COMMIT');
       return response;
     } catch (error) {
-      await this.idempotency.recordFailure(client, request.idempotencyKey);
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
+      try {
+        await this.idempotency.recordFailure(client, request.idempotencyKey);
+      } catch {
+        // Idempotency key was created in the rolled-back transaction; nothing to mark.
+      }
       throw error;
     } finally {
       client.release();
@@ -289,8 +293,12 @@ export class GrantService {
       await client.query('COMMIT');
       return response;
     } catch (error) {
-      await this.idempotency.recordFailure(client, request.idempotencyKey);
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
+      try {
+        await this.idempotency.recordFailure(client, request.idempotencyKey);
+      } catch {
+        // Idempotency key was created in the rolled-back transaction; nothing to mark.
+      }
       throw error;
     } finally {
       client.release();
@@ -374,7 +382,7 @@ export class GrantService {
         voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp,
         tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at,
         rebuilt_at, watermark_ingested_at, watermark_event_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (voucher_id) DO UPDATE SET
         grant_id = EXCLUDED.grant_id,
         voucher_code = EXCLUDED.voucher_code,
