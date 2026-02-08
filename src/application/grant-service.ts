@@ -155,7 +155,7 @@ export class GrantService {
 
       // Update projections
       await this.updateGrantProjection(client, request.grantId, bucket);
-      await this.updateVoucherProjection(client, request.voucherId);
+      await this.updateVoucherProjection(client, request.voucherId, request.grantId);
       await this.updateAllocatorProjection(client, allocatorId);
 
       const response = { voucherCode };
@@ -164,8 +164,8 @@ export class GrantService {
       await client.query('COMMIT');
       return response;
     } catch (error) {
-      await this.idempotency.recordFailure(client, request.idempotencyKey);
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -288,7 +288,7 @@ export class GrantService {
 
       // Update projections
       await this.updateGrantProjection(client, request.grantId, bucket);
-      await this.updateVoucherProjection(client, request.voucherId);
+      await this.updateVoucherProjection(client, request.voucherId, request.grantId);
       await this.updateAllocatorProjection(client, allocatorId);
 
       const response = { voucherCode };
@@ -357,7 +357,7 @@ export class GrantService {
     ]);
   }
 
-  private async updateVoucherProjection(client: PoolClient, voucherId: VoucherId): Promise<void> {
+  private async updateVoucherProjection(client: PoolClient, voucherId: VoucherId, grantId: GrantId): Promise<void> {
     const eventRows = await client.query(`
       SELECT event_type, event_data, ingested_at
       FROM event_log
@@ -365,7 +365,7 @@ export class GrantService {
       ORDER BY ingested_at ASC, event_id ASC
     `, [voucherId]);
 
-    const state = createInitialVoucherState(voucherId, 'dummy-grant-id'); // TODO: get grantId from events
+    const state = createInitialVoucherState(voucherId, grantId);
     for (const row of eventRows.rows) {
       const event = {
         eventType: row.event_type,
@@ -381,7 +381,7 @@ export class GrantService {
         voucher_id, grant_id, voucher_code, county_code, status, max_reimbursement_cents, is_lirp,
         tentative_expires_at, expires_at, issued_at, redeemed_at, expired_at, voided_at,
         rebuilt_at, watermark_ingested_at, watermark_event_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (voucher_id) DO UPDATE SET
         grant_id = EXCLUDED.grant_id,
         voucher_code = EXCLUDED.voucher_code,

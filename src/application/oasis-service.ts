@@ -362,17 +362,17 @@ export class OasisService {
       }
       checkBatchInvariant(state);
 
-      const canSubmit = canSubmitBatch(state);
-      if (!canSubmit.allowed) {
-        throw new Error(canSubmit.reason);
-      }
-
-      // Check if already submitted
+      // Check if already submitted (idempotent repeat)
       if (state.status === 'SUBMITTED' || state.status === 'ACKNOWLEDGED') {
         const response = { status: state.status };
         await this.idempotency.recordResult(client, request.idempotencyKey, response);
         await client.query('COMMIT');
         return response;
+      }
+
+      const canSubmit = canSubmitBatch(state);
+      if (!canSubmit.allowed) {
+        throw new Error(canSubmit.reason);
       }
 
       // Emit OASIS_EXPORT_BATCH_SUBMITTED
