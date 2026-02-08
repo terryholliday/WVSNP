@@ -142,7 +142,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(preflightEvent);
+      await this.store.appendWithClient(client, preflightEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
@@ -200,7 +200,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(startedEvent);
+      await this.store.appendWithClient(client, startedEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
@@ -359,7 +359,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(reconciledEvent);
+      await this.store.appendWithClient(client, reconciledEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
@@ -430,7 +430,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(closedEvent);
+      await this.store.appendWithClient(client, closedEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
@@ -475,7 +475,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(holdEvent);
+      await this.store.appendWithClient(client, holdEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 
@@ -520,7 +520,7 @@ export class CloseoutService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(resolvedEvent);
+      await this.store.appendWithClient(client, resolvedEvent);
 
       await this.updateCloseoutProjection(client, request.grantCycleId);
 

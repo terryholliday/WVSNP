@@ -143,7 +143,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(batchCreatedEvent);
+      await this.store.appendWithClient(client, batchCreatedEvent);
 
       // Emit OASIS_EXPORT_BATCH_ITEM_ADDED for each invoice
       for (const row of invoicesResult.rows) {
@@ -168,7 +168,7 @@ export class OasisService {
           actorId: request.actorId as ActorId,
           actorType: request.actorType,
         };
-        await this.store.append(itemEvent);
+        await this.store.appendWithClient(client, itemEvent);
       }
 
       // Update batch projection
@@ -290,7 +290,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(fileRenderedEvent);
+      await this.store.appendWithClient(client, fileRenderedEvent);
 
       // Update projection
       await this.updateBatchProjection(client, request.exportBatchId);
@@ -393,7 +393,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(submittedEvent);
+      await this.store.appendWithClient(client, submittedEvent);
 
       // Update projection
       await this.updateBatchProjection(client, request.exportBatchId);
@@ -456,7 +456,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(acknowledgedEvent);
+      await this.store.appendWithClient(client, acknowledgedEvent);
 
       await this.updateBatchProjection(client, request.exportBatchId);
 
@@ -517,7 +517,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(rejectedEvent);
+      await this.store.appendWithClient(client, rejectedEvent);
 
       await this.updateBatchProjection(client, request.exportBatchId);
 
@@ -606,7 +606,7 @@ export class OasisService {
         actorId: request.actorId as ActorId,
         actorType: request.actorType,
       };
-      await this.store.append(voidedEvent);
+      await this.store.appendWithClient(client, voidedEvent);
 
       await this.updateBatchProjection(client, request.exportBatchId);
 

@@ -79,7 +79,7 @@ export class InvoiceService {
           WHERE grant_cycle_id = $1
             AND target_invoice_id IS NULL
             AND (clinic_id = $2 OR clinic_id IS NULL)
-          ORDER BY created_at
+          ORDER BY recorded_at
         `, [grantCycleId, clinicId]);
         const clinicAdjustments = adjustmentsResult.rows;
 
@@ -112,7 +112,7 @@ export class InvoiceService {
           actorType: request.actorType,
         };
 
-        await this.store.append(event);
+        await this.store.appendWithClient(client, event);
 
         // Emit CLAIM_INVOICED for each claim
         for (const claimId of claimIds) {
@@ -131,7 +131,7 @@ export class InvoiceService {
             actorId: request.actorId as ActorId,
             actorType: request.actorType,
           };
-          await this.store.append(claimEvent);
+          await this.store.appendWithClient(client, claimEvent);
           await client.query(
             `UPDATE claims_projection
              SET status = 'INVOICED', invoice_id = $2, invoiced_at = $3
@@ -157,7 +157,7 @@ export class InvoiceService {
             actorId: request.actorId as ActorId,
             actorType: request.actorType,
           };
-          await this.store.append(adjEvent);
+          await this.store.appendWithClient(client, adjEvent);
         }
 
         invoiceIds.push(invoiceId);
@@ -237,7 +237,7 @@ export class InvoiceService {
         actorType: request.actorType,
       };
 
-      await this.store.append(event);
+      await this.store.appendWithClient(client, event);
 
       // Update payment projection
       await client.query(`

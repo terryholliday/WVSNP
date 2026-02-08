@@ -150,11 +150,7 @@ export class GrantService {
       ];
 
       for (const event of events) {
-        const appended = await this.store.append(event);
-        // Update projections here, but since store.append already does, wait no, store.append only inserts event, projections updated separately in command.
-
-        // For simplicity, update projections after events.
-
+        await this.store.appendWithClient(client, event);
       }
 
       // Update projections
@@ -287,7 +283,7 @@ export class GrantService {
       ];
 
       for (const event of events) {
-        await this.store.append(event);
+        await this.store.appendWithClient(client, event);
       }
 
       // Update projections

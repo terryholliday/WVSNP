@@ -198,7 +198,7 @@ export class ClaimService {
         actorType: request.actorType,
       };
 
-      await this.store.append(event);
+      await this.store.appendWithClient(client, event);
 
       // Update projection
       await this.updateClaimProjection(client, claimId);
@@ -278,7 +278,7 @@ export class ClaimService {
           actorType: request.actorType,
         };
 
-        await this.store.append(conflictEvent);
+        await this.store.appendWithClient(client, conflictEvent);
 
         const response = { success: false, conflictDetected: true };
         await this.idempotency.recordResult(client, request.idempotencyKey, response);
@@ -318,7 +318,7 @@ export class ClaimService {
         actorType: request.actorType,
       };
 
-      await this.store.append(event);
+      await this.store.appendWithClient(client, event);
 
       // If approved, emit GRANT_FUNDS_LIQUIDATED
       if (request.decision === 'APPROVE' && request.approvedAmountCents) {
@@ -344,7 +344,7 @@ export class ClaimService {
           actorType: request.actorType,
         };
 
-        await this.store.append(liquidationEvent);
+        await this.store.appendWithClient(client, liquidationEvent);
       }
 
       // Update projections
