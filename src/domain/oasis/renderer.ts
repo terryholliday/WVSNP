@@ -4,7 +4,7 @@
  * NO side effects, NO database access
  */
 
-export const OASIS_FORMAT_VERSION = 'OASIS_FW_v1' as const;
+export const OASIS_FORMAT_VERSION = 'OASIS_FW01' as const;
 
 export interface InvoiceForExport {
   invoiceId: string;
@@ -107,7 +107,7 @@ function renderHeaderRecord(
   const countField = padLeft(recordCount.toString(), 6, '0');
   const totalField = padLeft(controlTotalCents.toString(), 12, '0');
   const fundCodeField = padRight(truncate(fundCode, 5), 5);
-  const versionField = padRight(OASIS_FORMAT_VERSION, 10);
+  const versionField = padRight(truncate(OASIS_FORMAT_VERSION, 10), 10);
   const filler = padRight('', 38);
 
   const line = recordType + batchCodeField + dateField + countField + totalField + fundCodeField + versionField + filler;
