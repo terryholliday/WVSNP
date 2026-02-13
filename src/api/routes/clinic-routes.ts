@@ -22,10 +22,20 @@ export function createClinicRoutes(pool: Pool, eventStore: EventStore, idempoten
         throw new ApiError(400, 'MISSING_IDEMPOTENCY_KEY', 'Idempotency-Key header is required');
       }
 
+      // Resolve grantCycleId from voucher (not from user input)
+      const voucherLookup = await pool.query(
+        'SELECT v.grant_id, gb.grant_cycle_id FROM vouchers_projection v JOIN grant_balances_projection gb ON gb.grant_id = v.grant_id WHERE v.voucher_id = $1 LIMIT 1',
+        [req.body.voucherId]
+      );
+      if (voucherLookup.rows.length === 0) {
+        throw new ApiError(404, 'VOUCHER_NOT_FOUND', 'Voucher not found');
+      }
+      const grantCycleId = voucherLookup.rows[0].grant_cycle_id;
+
       const result = await claimService.submitClaim({
         idempotencyKey,
         claimId: undefined,
-        grantCycleId: req.body.voucherId, // Will be resolved from voucher
+        grantCycleId,
         clinicId,
         voucherId: req.body.voucherId,
         procedureCode: req.body.procedureCode,
@@ -52,7 +62,8 @@ export function createClinicRoutes(pool: Pool, eventStore: EventStore, idempoten
   router.get('/claims', validateQuery(listClaimsQuerySchema), async (req, res, next) => {
     try {
       const clinicId = req.auth!.entityId!;
-      const { status, limit } = req.query as any;
+      const { status } = req.query as any;
+      const limit = parseInt(req.query.limit as string, 10) || 50;
 
       const query = `
         SELECT claim_id, voucher_id, procedure_code, date_of_service, status,
@@ -130,7 +141,8 @@ export function createClinicRoutes(pool: Pool, eventStore: EventStore, idempoten
   router.get('/invoices', validateQuery(listInvoicesQuerySchema), async (req, res, next) => {
     try {
       const clinicId = req.auth!.entityId!;
-      const { status, limit } = req.query as any;
+      const { status } = req.query as any;
+      const limit = parseInt(req.query.limit as string, 10) || 50;
 
       const query = `
         SELECT invoice_id, invoice_period_start, invoice_period_end,

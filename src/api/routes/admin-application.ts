@@ -42,7 +42,7 @@ export function createAdminApplicationRouter(pool: Pool): Router {
           WHERE status = $1
           ORDER BY submitted_at ASC
           LIMIT $2 OFFSET $3
-        `, [status, parseInt(limit as string), parseInt(offset as string)]);
+        `, [status, parseInt(limit as string, 10), parseInt(offset as string, 10)]);
 
         const applications = result.rows.map(row => ({
           applicationId: row.application_id,
@@ -68,8 +68,8 @@ export function createAdminApplicationRouter(pool: Pool): Router {
           data: {
             applications,
             pagination: {
-              limit: parseInt(limit as string),
-              offset: parseInt(offset as string),
+              limit: parseInt(limit as string, 10),
+              offset: parseInt(offset as string, 10),
               count: applications.length
             }
           }
@@ -213,8 +213,8 @@ export function createAdminApplicationRouter(pool: Pool): Router {
 
       const alerts = await fraudService.getFraudAlerts(pool, {
         severity: severityFilter,
-        limit: parseInt(limit as string),
-        offset: parseInt(offset as string)
+        limit: parseInt(limit as string, 10),
+        offset: parseInt(offset as string, 10)
       });
 
       res.status(200).json({
@@ -222,8 +222,8 @@ export function createAdminApplicationRouter(pool: Pool): Router {
         data: {
           alerts,
           pagination: {
-            limit: parseInt(limit as string),
-            offset: parseInt(offset as string),
+            limit: parseInt(limit as string, 10),
+            offset: parseInt(offset as string, 10),
             count: alerts.length
           }
         }
@@ -342,13 +342,13 @@ export function createAdminApplicationRouter(pool: Pool): Router {
         res.status(200).json({
           success: true,
           data: {
-            totalApplications: parseInt(stats.total_applications) || 0,
-            draftApplications: parseInt(stats.draft_applications) || 0,
-            submittedApplications: parseInt(stats.submitted_applications) || 0,
-            underReviewApplications: parseInt(stats.under_review_applications) || 0,
-            awardedApplications: parseInt(stats.awarded_applications) || 0,
-            deniedApplications: parseInt(stats.denied_applications) || 0,
-            waitlistedApplications: parseInt(stats.waitlisted_applications) || 0,
+            totalApplications: parseInt(stats.total_applications, 10) || 0,
+            draftApplications: parseInt(stats.draft_applications, 10) || 0,
+            submittedApplications: parseInt(stats.submitted_applications, 10) || 0,
+            underReviewApplications: parseInt(stats.under_review_applications, 10) || 0,
+            awardedApplications: parseInt(stats.awarded_applications, 10) || 0,
+            deniedApplications: parseInt(stats.denied_applications, 10) || 0,
+            waitlistedApplications: parseInt(stats.waitlisted_applications, 10) || 0,
             totalRequestedAmountCents: stats.total_requested_cents || '0',
             averageRequestedAmountCents: stats.average_requested_cents || '0'
           }

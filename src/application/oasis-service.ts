@@ -180,6 +180,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -301,6 +302,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -404,6 +406,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -466,6 +469,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -527,6 +531,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
@@ -616,6 +621,7 @@ export class OasisService {
       return response;
     } catch (error) {
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();

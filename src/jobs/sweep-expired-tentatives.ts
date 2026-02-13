@@ -26,7 +26,7 @@ export async function sweepExpiredTentatives(pool: Pool, store: EventStore): Pro
 
       // Double-check status after lock
       const checkRow = await client.query('SELECT status FROM vouchers_projection WHERE voucher_id = $1', [voucherId]);
-      if (checkRow.rows[0].status !== 'TENTATIVE') continue;
+      if (checkRow.rows.length === 0 || checkRow.rows[0].status !== 'TENTATIVE') continue;
 
       const causationRow = await client.query(
         `SELECT event_id, grant_cycle_id
@@ -60,7 +60,7 @@ export async function sweepExpiredTentatives(pool: Pool, store: EventStore): Pro
         actorType: 'SYSTEM',
       };
 
-      await store.append(event);
+      await store.appendWithClient(client, event);
 
       // Update projection
       await client.query('UPDATE vouchers_projection SET status = $1 WHERE voucher_id = $2', ['VOIDED', voucherId]);

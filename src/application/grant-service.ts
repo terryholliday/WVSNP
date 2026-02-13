@@ -256,7 +256,7 @@ export class GrantService {
           eventData: {
             voucherId: request.voucherId,
             amountCents: maxReimbursementCents.toString(),
-            isLIRP: false, // TODO
+            isLIRP: voucherRow.rows[0].is_lirp,
           },
           occurredAt: new Date(),
           grantCycleId,
@@ -297,8 +297,8 @@ export class GrantService {
       await client.query('COMMIT');
       return response;
     } catch (error) {
-      await this.idempotency.recordFailure(client, request.idempotencyKey);
       await client.query('ROLLBACK');
+      try { await this.idempotency.recordFailure(client, request.idempotencyKey); } catch { /* swallow */ }
       throw error;
     } finally {
       client.release();
