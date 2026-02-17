@@ -317,7 +317,7 @@ export default function StatusPage() {
                 </div>
                 <div>
                   <div className="font-medium text-gray-900">Email Support</div>
-                  <div className="text-gray-600">wvda-spayneuter@wv.gov</div>
+                  <div className="text-gray-600">spayneuter@wvsnp.org</div>
                   <div className="text-gray-500">Response within 2 business days</div>
                 </div>
               </div>

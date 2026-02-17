@@ -126,7 +126,7 @@ export default function Home() {
               <h4 className="text-lg font-semibold text-gray-900 mb-2">Need Help?</h4>
               <div className="text-sm text-gray-600 space-y-1">
                 <p>WVDA Grant Administration: <span className="font-medium">(304) 123-4567</span></p>
-                <p>Email: <span className="font-medium">wvda-grants@wv.gov</span></p>
+                <p>Email: <span className="font-medium">grants@wvsnp.org</span></p>
                 <p>Hours: Monday-Friday, 9 AM - 5 PM EST</p>
               </div>
             </div>

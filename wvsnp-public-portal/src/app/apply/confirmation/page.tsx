@@ -215,7 +215,7 @@ export default function ConfirmationPage() {
                 Call WVDA Helpline: <span className="font-medium">(304) 123-4567</span>
               </p>
               <p>
-                Email: <span className="font-medium">wvda-spayneuter@wv.gov</span>
+                Email: <span className="font-medium">spayneuter@wvsnp.org</span>
               </p>
             </div>
           </div>
