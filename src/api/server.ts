@@ -85,7 +85,7 @@ const authenticate = createAuthMiddleware(pool, JWT_SECRET);
 app.use('/api/v1/clinics', authenticate('clinic'), createClinicRoutes(pool, eventStore, idempotency));
 app.use('/api/v1/grantees', authenticate('grantee'), createGranteeRoutes(pool, eventStore, idempotency));
 app.use('/api/v1/admin', authenticate('admin'), createAdminRoutes(pool, eventStore, idempotency));
-app.use('/api/v1/public', publicLimiter, authenticate('public'), createPublicRoutes(pool));
+app.use('/api/v1/public', publicLimiter, authenticate('public'), createPublicRoutes(pool, eventStore));
 
 // Error handlers (must be last)
 app.use(notFoundHandler);

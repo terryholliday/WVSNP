@@ -217,4 +217,257 @@ describe('API E2E smoke', () => {
       ])
     ).rejects.toThrow(/immutable/i);
   });
+
+  test('public registry returns license projection without PII fields', async () => {
+    const licenseId = '11111111-1111-7111-8111-111111111111';
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000101',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        $2::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
+        '11111111-1111-4111-8111-111111111111'::uuid,
+        NULL,
+        '11111111-1111-4111-8111-222222222222'::uuid,
+        'SYSTEM'
+      )`,
+      [
+        licenseId,
+        JSON.stringify({
+          licenseNumber: 'BR-2026-0001',
+          licenseType: 'BREEDER',
+          county: 'KANAWHA',
+          activeFrom: '2026-01-01T00:00:00.000Z',
+          expiresOn: '2026-12-31T23:59:59.000Z',
+          inspectionGrade: 'A',
+          enforcementActions: 0,
+          contactName: 'SHOULD_NOT_SURFACE',
+        }),
+      ]
+    );
+
+    const res = await fetch(`${baseUrl}/api/v1/public/registry/licenses?q=BR-2026-0001`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(1);
+    expect(body.items[0].licenseId).toBe(licenseId);
+    expect(body.items[0].licenseNumber).toBe('BR-2026-0001');
+    expect(body.items[0].inspectionGrade).toBe('A');
+    expect(body.items[0].contactName).toBeUndefined();
+  });
+
+  test('single verify returns signed token and emits verification events', async () => {
+    const licenseId = '22222222-2222-7222-8222-222222222222';
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000102',
+        'LICENSE',
+        $1::uuid,
+        'TRANSPORTER_LICENSED',
+        $2::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
+        '22222222-2222-4222-8222-222222222222'::uuid,
+        NULL,
+        '22222222-2222-4222-8222-333333333333'::uuid,
+        'SYSTEM'
+      )`,
+      [
+        licenseId,
+        JSON.stringify({
+          licenseNumber: 'TR-2026-0009',
+          licenseType: 'TRANSPORTER',
+          county: 'CABELL',
+          expiresOn: '2026-12-31T23:59:59.000Z',
+        }),
+      ]
+    );
+
+    const res = await fetch(`${baseUrl}/api/v1/public/verify/${licenseId}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.licenseId).toBe(licenseId);
+    expect(body.status).toBe('ACTIVE');
+    expect(typeof body.signedToken).toBe('string');
+
+    const eventRows = await pool.query(
+      `SELECT event_type FROM event_log
+       WHERE aggregate_id = $1::uuid
+         AND event_type IN ('LICENSE_VERIFICATION_TOKEN_ISSUED', 'LICENSE_VERIFICATION_PERFORMED')
+       ORDER BY ingested_at ASC`,
+      [licenseId]
+    );
+    expect(eventRows.rows.map((row) => row.event_type)).toEqual([
+      'LICENSE_VERIFICATION_TOKEN_ISSUED',
+      'LICENSE_VERIFICATION_PERFORMED',
+    ]);
+  });
+
+  test('QR contract endpoint serves JSON and records human verification event', async () => {
+    const licenseId = '33333333-3333-7333-8333-333333333333';
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000103',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSE_STATUS_CHANGED',
+        $2::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
+        '33333333-3333-4333-8333-333333333333'::uuid,
+        '33333333-3333-4333-8333-444444444444'::uuid,
+        '33333333-3333-4333-8333-555555555555'::uuid,
+        'ADMIN'
+      )`,
+      [
+        licenseId,
+        JSON.stringify({
+          previousStatus: 'ACTIVE',
+          newStatus: 'SUSPENDED',
+          reason: 'Inspection hold',
+          licenseNumber: 'BR-2026-0019',
+          county: 'MONONGALIA',
+        }),
+      ]
+    );
+
+    const res = await fetch(`${baseUrl}/api/v1/public/v1/l/${licenseId}`, {
+      headers: { Accept: 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.licenseId).toBe(licenseId);
+    expect(body.status).toBe('SUSPENDED');
+
+    const verifyEvent = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE aggregate_id = $1::uuid
+         AND event_type = 'LICENSE_VERIFICATION_PERFORMED'
+         AND event_data->>'verifierType' = 'HUMAN'`,
+      [licenseId]
+    );
+    expect(verifyEvent.rows[0].count).toBe(1);
+  });
+
+  test('batch verify emits marketplace batch event and per-license verification events', async () => {
+    const licenseA = '44444444-4444-7444-8444-444444444444';
+    const licenseB = '55555555-5555-7555-8555-555555555555';
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES
+      (
+        '018f0b63-0000-7000-8000-000000000104',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        '{"licenseNumber":"BR-2026-0301","county":"KANAWHA"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        '44444444-4444-4444-8444-444444444444'::uuid,
+        NULL,
+        '44444444-4444-4444-8444-555555555555'::uuid,
+        'SYSTEM'
+      ),
+      (
+        '018f0b63-0000-7000-8000-000000000105',
+        'LICENSE',
+        $2::uuid,
+        'TRANSPORTER_LICENSED',
+        '{"licenseNumber":"TR-2026-0901","county":"CABELL"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        '55555555-5555-4555-8555-555555555555'::uuid,
+        NULL,
+        '55555555-5555-4555-8555-666666666666'::uuid,
+        'SYSTEM'
+      )`,
+      [licenseA, licenseB]
+    );
+
+    const res = await fetch(`${baseUrl}/api/v1/public/verify/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        partnerId: 'partner-001',
+        licenseIds: [licenseA, licenseB],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.results).toHaveLength(2);
+    expect(body.results.every((item: any) => item.found)).toBe(true);
+
+    const batchEvent = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE event_type = 'MARKETPLACE_BATCH_VERIFICATION_PERFORMED'
+         AND event_data->>'partnerId' = 'partner-001'`
+    );
+    expect(batchEvent.rows[0].count).toBe(1);
+
+    const perLicenseEvents = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE event_type = 'LICENSE_VERIFICATION_PERFORMED'
+         AND event_data->>'verifierType' = 'BATCH'
+         AND (event_data->>'licenseId' = $1 OR event_data->>'licenseId' = $2)`,
+      [licenseA, licenseB]
+    );
+    expect(perLicenseEvents.rows[0].count).toBe(2);
+  });
+
+  test('transparency snapshot publish stores immutable artifact and emits hash anchor event', async () => {
+    process.env.BARK_TRANSPARENCY_ADMIN_KEY = 'test-admin-key';
+
+    const res = await fetch(`${baseUrl}/api/v1/public/transparency/snapshots/publish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-wvda-admin-key': 'test-admin-key',
+      },
+      body: JSON.stringify({ snapshotPeriod: '2026-02' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.artifactId).toBeDefined();
+    expect(body.contentHash).toMatch(/^[0-9a-f]{64}$/);
+
+    const artifactRes = await fetch(`${baseUrl}/api/v1/public/transparency/artifacts/${body.artifactId}`);
+    expect(artifactRes.status).toBe(200);
+    expect(artifactRes.headers.get('x-content-sha256')).toBe(body.contentHash);
+    const artifactBody = await artifactRes.json();
+    expect(artifactBody.snapshotPeriod).toBe('2026-02');
+
+    const hashAnchoredEvents = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE aggregate_id = $1::uuid
+         AND event_type = 'TRANSPARENCY_ARTIFACT_HASH_ANCHORED'`,
+      [body.artifactId]
+    );
+    expect(hashAnchoredEvents.rows[0].count).toBe(1);
+  });
 });

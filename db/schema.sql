@@ -147,6 +147,24 @@ CREATE TABLE IF NOT EXISTS applications_projection (
   watermark_event_id UUID NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS transparency_artifacts_projection (
+  artifact_id UUID PRIMARY KEY,
+  artifact_type VARCHAR(50) NOT NULL,
+  snapshot_period VARCHAR(7),
+  stable_path TEXT NOT NULL,
+  content_hash VARCHAR(64) NOT NULL,
+  content_json JSONB NOT NULL,
+  published_at TIMESTAMPTZ NOT NULL,
+  watermark_ingested_at TIMESTAMPTZ NOT NULL,
+  watermark_event_id UUID NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transparency_stable_path
+  ON transparency_artifacts_projection(stable_path);
+
+CREATE INDEX IF NOT EXISTS idx_transparency_period
+  ON transparency_artifacts_projection(snapshot_period, published_at DESC);
+
 
 -- ============================================
 -- PHASE 2 PROJECTIONS
