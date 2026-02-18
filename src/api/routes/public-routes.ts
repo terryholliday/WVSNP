@@ -14,6 +14,24 @@ const LICENSE_EVENT_TYPES = [
   'TRANSPORTER_LICENSE_STATUS_CHANGED',
 ];
 
+const INSPECTION_EVENT_TYPES = [
+  'LICENSE_INSPECTED',
+  'LICENSE_REINSPECTED',
+  'INSPECTION_GRADE_ASSIGNED',
+];
+
+const ENFORCEMENT_EVENT_TYPES = [
+  'LICENSE_ENFORCEMENT_ACTION_TAKEN',
+  'LICENSE_SUSPENDED',
+  'LICENSE_REVOKED',
+  'ADMINISTRATIVE_PENALTY_ASSESSED',
+];
+
+const PROHIBITION_EVENT_TYPES = [
+  'PROHIBITION_ORDER_ISSUED',
+  'PROHIBITION_ORDER_LIFTED',
+];
+
 const VERIFY_TOKEN_ISSUER = process.env.BARK_VERIFY_ISSUER_KEY_ID || 'barkwv-v1';
 const VERIFY_TOKEN_SECRET = process.env.BARK_VERIFY_TOKEN_SECRET || 'dev-bark-verify-secret-change-me';
 const DEFAULT_GRANT_CYCLE_ID = process.env.BARK_GRANT_CYCLE_ID || 'BARKWV';
@@ -31,6 +49,44 @@ interface PublicLicenseProjection {
   inspectionGrade: string;
   enforcementActions: number;
   signedToken?: string;
+}
+
+interface DashboardSummary extends TransparencySnapshot {
+  month: string;
+  inspectionsCompleted: number;
+  enforcementActionsFinal: number;
+  prohibitionOrdersActive: number;
+  impoundSubmissionsLogged: number;
+  csvPath: string;
+}
+
+interface PublicInspectionRecord {
+  licenseId: string;
+  licenseNumber: string | null;
+  licenseType: 'BREEDER' | 'TRANSPORTER';
+  inspectionDate: string | null;
+  inspectionGrade: string;
+  summaryFindings: string | null;
+}
+
+interface PublicEnforcementAction {
+  actionId: string;
+  licenseId: string;
+  licenseNumber: string | null;
+  violationClass: string | null;
+  actionType: string;
+  penaltyAmountCents: number | null;
+  occurredAt: string;
+}
+
+interface PublicProhibitionOrder {
+  orderId: string;
+  subjectLicenseId: string | null;
+  subjectLicenseNumber: string | null;
+  status: 'ACTIVE' | 'LIFTED';
+  effectiveAt: string;
+  liftedAt: string | null;
+  reason: string | null;
 }
 
 interface TransparencySnapshot {
@@ -77,6 +133,15 @@ function parseLicenseType(eventType: string, eventData: Record<string, unknown>)
     return 'TRANSPORTER';
   }
   return 'BREEDER';
+}
+
+function asNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function asNullableNumber(value: unknown): number | null {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
 }
 
 function projectLicense(row: any): PublicLicenseProjection {
@@ -181,6 +246,145 @@ async function getLicenseProjection(pool: Pool, licenseId: string): Promise<Publ
   }
 
   return projectLicense(result.rows[0]);
+}
+
+async function getLicenseProjectionByNumber(pool: Pool, licenseNumber: string): Promise<PublicLicenseProjection | null> {
+  if (!licenseNumber.trim()) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `SELECT DISTINCT ON (aggregate_id)
+        aggregate_id::text AS license_id,
+        event_type,
+        event_data,
+        occurred_at,
+        ingested_at
+      FROM event_log
+      WHERE aggregate_type = 'LICENSE'
+        AND event_type = ANY($1::text[])
+        AND COALESCE(event_data->>'licenseNumber', '') ILIKE $2
+      ORDER BY aggregate_id, ingested_at DESC, event_id DESC
+      LIMIT 1`,
+    [LICENSE_EVENT_TYPES, licenseNumber]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return projectLicense(result.rows[0]);
+}
+
+async function getLatestLicenseProjections(
+  pool: Pool,
+  options: { query?: string; limit?: number; licenseType?: 'BREEDER' | 'TRANSPORTER' }
+): Promise<PublicLicenseProjection[]> {
+  const query = options.query?.trim() ?? '';
+  const limit = Math.min(options.limit ?? 25, 250);
+  const searchTerm = query.length > 0 ? `%${query}%` : null;
+
+  const result = await pool.query(
+    `SELECT DISTINCT ON (aggregate_id)
+        aggregate_id::text AS license_id,
+        event_type,
+        event_data,
+        occurred_at,
+        ingested_at
+      FROM event_log
+      WHERE aggregate_type = 'LICENSE'
+        AND event_type = ANY($1::text[])
+        AND (
+          $2::text IS NULL
+          OR COALESCE(event_data->>'licenseNumber', '') ILIKE $2
+          OR COALESCE(event_data->>'county', '') ILIKE $2
+          OR COALESCE(event_data->>'licenseType', '') ILIKE $2
+        )
+      ORDER BY aggregate_id, ingested_at DESC, event_id DESC
+      LIMIT $3`,
+    [LICENSE_EVENT_TYPES, searchTerm, limit]
+  );
+
+  const projected = result.rows.map(projectLicense);
+  if (!options.licenseType) {
+    return projected;
+  }
+
+  return projected.filter((item) => item.licenseType === options.licenseType);
+}
+
+function buildDashboardCsv(snapshot: DashboardSummary): string {
+  const headers = [
+    'month',
+    'generatedAt',
+    'activeBreeders',
+    'activeTransporters',
+    'suspendedOrRevokedLicenses',
+    'verificationsLogged',
+    'inspectionsCompleted',
+    'enforcementActionsFinal',
+    'prohibitionOrdersActive',
+    'impoundSubmissionsLogged',
+  ];
+
+  const values = [
+    snapshot.month,
+    snapshot.generatedAt,
+    String(snapshot.totals.activeBreeders),
+    String(snapshot.totals.activeTransporters),
+    String(snapshot.totals.suspendedOrRevokedLicenses),
+    String(snapshot.totals.verificationsLogged),
+    String(snapshot.inspectionsCompleted),
+    String(snapshot.enforcementActionsFinal),
+    String(snapshot.prohibitionOrdersActive),
+    String(snapshot.impoundSubmissionsLogged),
+  ];
+
+  return `${headers.join(',')}\n${values.join(',')}\n`;
+}
+
+async function buildDashboardSummary(pool: Pool, month: string): Promise<DashboardSummary> {
+  const base = await buildSnapshot(pool, month);
+  const [inspections, enforcement, prohibitions, impounds] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+        FROM event_log
+        WHERE event_type = ANY($1::text[])
+          AND to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM') = $2`,
+      [INSPECTION_EVENT_TYPES, month]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+        FROM event_log
+        WHERE event_type = ANY($1::text[])
+          AND to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM') = $2`,
+      [ENFORCEMENT_EVENT_TYPES, month]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+        FROM event_log
+        WHERE event_type = 'PROHIBITION_ORDER_ISSUED'
+          AND to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM') <= $1`,
+      [month]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+        FROM event_log
+        WHERE event_type = 'IMPOUNDED_ANIMAL_DATA_SUBMITTED'
+          AND to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM') = $1`,
+      [month]
+    ),
+  ]);
+
+  return {
+    ...base,
+    month,
+    inspectionsCompleted: inspections.rows[0]?.count ?? 0,
+    enforcementActionsFinal: enforcement.rows[0]?.count ?? 0,
+    prohibitionOrdersActive: prohibitions.rows[0]?.count ?? 0,
+    impoundSubmissionsLogged: impounds.rows[0]?.count ?? 0,
+    csvPath: `/api/v1/public/dashboard/monthly/${month}.csv`,
+  };
 }
 
 function renderVerifyHtml(license: PublicLicenseProjection): string {
@@ -312,34 +516,152 @@ export function createPublicRoutes(pool: Pool, store: EventStore) {
   // Public License Registry Search
   router.get('/registry/licenses', registryLimiter, async (req, res, next) => {
     try {
-      const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const query = typeof req.query.q === 'string' ? req.query.q : '';
       const limit = Math.min(Number(req.query.limit ?? 25) || 25, 100);
-      const searchTerm = query.length > 0 ? `%${query}%` : null;
-
-      const result = await pool.query(
-        `SELECT DISTINCT ON (aggregate_id)
-            aggregate_id::text AS license_id,
-            event_type,
-            event_data,
-            occurred_at,
-            ingested_at
-          FROM event_log
-          WHERE aggregate_type = 'LICENSE'
-            AND event_type = ANY($1::text[])
-            AND (
-              $2::text IS NULL
-              OR COALESCE(event_data->>'licenseNumber', '') ILIKE $2
-              OR COALESCE(event_data->>'county', '') ILIKE $2
-              OR COALESCE(event_data->>'licenseType', '') ILIKE $2
-            )
-          ORDER BY aggregate_id, ingested_at DESC, event_id DESC
-          LIMIT $3`,
-        [LICENSE_EVENT_TYPES, searchTerm, limit]
-      );
+      const items = await getLatestLicenseProjections(pool, { query, limit });
 
       res.json({
-        items: result.rows.map(projectLicense),
-        count: result.rows.length,
+        items,
+        count: items.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public transporter registry
+  router.get('/registry/transporters', registryLimiter, async (req, res, next) => {
+    try {
+      const query = typeof req.query.q === 'string' ? req.query.q : '';
+      const limit = Math.min(Number(req.query.limit ?? 25) || 25, 100);
+      const items = await getLatestLicenseProjections(pool, { query, limit, licenseType: 'TRANSPORTER' });
+      res.json({
+        items,
+        count: items.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public inspection feed
+  router.get('/registry/inspections', registryLimiter, async (req, res, next) => {
+    try {
+      const query = typeof req.query.q === 'string' ? req.query.q : '';
+      const limit = Math.min(Number(req.query.limit ?? 25) || 25, 100);
+      const licenses = await getLatestLicenseProjections(pool, { query, limit });
+      const items: PublicInspectionRecord[] = licenses.map((license) => ({
+        licenseId: license.licenseId,
+        licenseNumber: license.licenseNumber,
+        licenseType: license.licenseType,
+        inspectionDate: license.activeFrom,
+        inspectionGrade: license.inspectionGrade,
+        summaryFindings: null,
+      }));
+
+      res.json({
+        items,
+        count: items.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public enforcement action feed
+  router.get('/registry/enforcement-actions', registryLimiter, async (req, res, next) => {
+    try {
+      const limit = Math.min(Number(req.query.limit ?? 50) || 50, 200);
+      const result = await pool.query(
+        `SELECT event_id::text,
+                aggregate_id::text AS license_id,
+                event_type,
+                event_data,
+                occurred_at
+         FROM event_log
+         WHERE event_type = ANY($1::text[])
+         ORDER BY ingested_at DESC, event_id DESC
+         LIMIT $2`,
+        [ENFORCEMENT_EVENT_TYPES, limit]
+      );
+
+      const items: PublicEnforcementAction[] = result.rows.map((row: any) => {
+        const eventData = (row.event_data ?? {}) as Record<string, unknown>;
+        return {
+          actionId: row.event_id,
+          licenseId: row.license_id,
+          licenseNumber: asNullableString(eventData.licenseNumber),
+          violationClass: asNullableString(eventData.violationClass),
+          actionType: row.event_type,
+          penaltyAmountCents: asNullableNumber(eventData.penaltyAmountCents),
+          occurredAt: row.occurred_at?.toISOString?.() ?? String(row.occurred_at),
+        };
+      });
+
+      res.json({
+        items,
+        count: items.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public prohibition order feed
+  router.get('/registry/prohibition-orders', registryLimiter, async (req, res, next) => {
+    try {
+      const limit = Math.min(Number(req.query.limit ?? 50) || 50, 200);
+      const result = await pool.query(
+        `SELECT event_id::text,
+                aggregate_id::text,
+                event_type,
+                event_data,
+                occurred_at
+         FROM event_log
+         WHERE event_type = ANY($1::text[])
+         ORDER BY ingested_at DESC, event_id DESC
+         LIMIT $2`,
+        [PROHIBITION_EVENT_TYPES, limit]
+      );
+
+      const items: PublicProhibitionOrder[] = result.rows.map((row: any) => {
+        const eventData = (row.event_data ?? {}) as Record<string, unknown>;
+        return {
+          orderId: row.event_id,
+          subjectLicenseId: asNullableString(eventData.licenseId),
+          subjectLicenseNumber: asNullableString(eventData.licenseNumber),
+          status: row.event_type === 'PROHIBITION_ORDER_LIFTED' ? 'LIFTED' : 'ACTIVE',
+          effectiveAt: row.occurred_at?.toISOString?.() ?? String(row.occurred_at),
+          liftedAt: row.event_type === 'PROHIBITION_ORDER_LIFTED'
+            ? row.occurred_at?.toISOString?.() ?? String(row.occurred_at)
+            : null,
+          reason: asNullableString(eventData.reason),
+        };
+      });
+
+      res.json({
+        items,
+        count: items.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Verify by public license number
+  router.get('/verify-by-number/:licenseNumber', verifyLimiter, async (req, res, next) => {
+    try {
+      const { licenseNumber } = req.params;
+      const projection = await getLicenseProjectionByNumber(pool, licenseNumber);
+      if (!projection) {
+        throw new ApiError(404, 'LICENSE_NOT_FOUND', 'License not found');
+      }
+
+      return res.json({
+        licenseId: projection.licenseId,
+        licenseNumber: projection.licenseNumber,
+        status: projection.status,
+        validUntil: projection.expiresOn,
       });
     } catch (error) {
       next(error);
@@ -499,6 +821,79 @@ export function createPublicRoutes(pool: Pool, store: EventStore) {
 
       res.json({
         results,
+        correlationId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public monthly dashboard (required for public transparency)
+  router.get('/dashboard/monthly', registryLimiter, async (req, res, next) => {
+    try {
+      const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month)
+        ? req.query.month
+        : new Date().toISOString().slice(0, 7);
+      const snapshot = await buildDashboardSummary(pool, month);
+      res.json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public monthly dashboard CSV export
+  router.get('/dashboard/monthly/:month.csv', registryLimiter, async (req, res, next) => {
+    try {
+      const { month } = req.params;
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        throw new ApiError(400, 'INVALID_MONTH', 'month must be YYYY-MM');
+      }
+      const snapshot = await buildDashboardSummary(pool, month);
+      const csv = buildDashboardCsv(snapshot);
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition', `attachment; filename="bark-dashboard-${month}.csv"`);
+      res.status(200).send(csv);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // County impounded animal submission endpoint
+  router.post('/impounds/submissions', verifyLimiter, async (req, res, next) => {
+    try {
+      const countyCode = asNullableString(req.body?.countyCode);
+      const facilityId = asNullableString(req.body?.facilityId);
+      const animals = Array.isArray(req.body?.animals) ? req.body.animals : [];
+
+      if (!countyCode || !facilityId || animals.length === 0) {
+        throw new ApiError(400, 'INVALID_IMPOUND_SUBMISSION', 'countyCode, facilityId, and at least one animal are required');
+      }
+
+      const correlationId = typeof req.body?.correlationId === 'string' && isUuid(req.body.correlationId)
+        ? req.body.correlationId
+        : crypto.randomUUID();
+      const submissionId = crypto.randomUUID();
+
+      await appendPublicEvent(
+        store,
+        'IMPOUNDED_ANIMAL_DATA_SUBMITTED',
+        'COUNTY_FACILITY',
+        facilityId,
+        {
+          submissionId,
+          countyCode,
+          facilityId,
+          animalCount: animals.length,
+          animals,
+        },
+        correlationId
+      );
+
+      res.status(202).json({
+        submissionId,
+        countyCode,
+        facilityId,
+        acceptedAnimalCount: animals.length,
         correlationId,
       });
     } catch (error) {
