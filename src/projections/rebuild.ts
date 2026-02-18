@@ -1,5 +1,11 @@
 ﻿import { Pool, PoolClient } from 'pg';
 import { EventStore, Watermark, DomainEvent } from '../event-store';
+import {
+  BreederFilingType,
+  calculateComplianceStatus,
+  calculateCureDeadlineAt,
+  calculateDueAt,
+} from '../domain/compliance/timeline-logic';
 
 const ALLOWED_EVENTS = new Set([
   // Application events (Phase 1)
@@ -102,6 +108,14 @@ const ALLOWED_EVENTS = new Set([
   'GRANT_CYCLE_CLOSEOUT_ARTIFACT_ATTACHED',
   'GRANT_CLOSEOUT_AUDIT_HOLD',   // alias
   'GRANT_CLOSEOUT_AUDIT_RESOLVED', // alias
+  // Breeder compliance reporting events (Agent 4)
+  'BREEDER_TRANSFER_CONFIRMATION_FILED',
+  'BREEDER_TRANSFER_CONFIRMATION_AMENDED',
+  'BREEDER_ACCIDENTAL_LITTER_REGISTRATION_FILED',
+  'BREEDER_ACCIDENTAL_LITTER_REGISTRATION_AMENDED',
+  'BREEDER_QUARTERLY_TRANSITION_REPORT_FILED',
+  'BREEDER_QUARTERLY_TRANSITION_REPORT_AMENDED',
+  'BREEDER_FILING_CURED',
 ]);
 
 // ============================================
@@ -284,6 +298,24 @@ interface CloseoutState {
   auditResolution: string | null;
 }
 
+interface BreederComplianceState {
+  filingId: string;
+  licenseId: string | null;
+  grantCycleId: string;
+  filingType: BreederFilingType;
+  reportingYear: number | null;
+  reportingQuarter: number | null;
+  occurredAt: Date | null;
+  dueAt: Date;
+  cureDeadlineAt: Date | null;
+  submittedAt: Date | null;
+  amendedAt: Date | null;
+  curedAt: Date | null;
+  status: 'ON_TIME' | 'DUE_SOON' | 'OVERDUE' | 'CURED';
+  lastEventId: string;
+  lastEventIngestedAt: Date;
+}
+
 // ============================================
 // ALL PROJECTION STATE MAPS
 // ============================================
@@ -299,6 +331,7 @@ interface RebuildState {
   adjustments: Map<string, AdjustmentState>;
   oasisBatches: Map<string, OasisBatchState>;
   closeouts: Map<string, CloseoutState>;
+  breederComplianceQueue: Map<string, BreederComplianceState>;
 }
 
 function createEmptyState(): RebuildState {
@@ -314,6 +347,7 @@ function createEmptyState(): RebuildState {
     adjustments: new Map(),
     oasisBatches: new Map(),
     closeouts: new Map(),
+    breederComplianceQueue: new Map(),
   };
 }
 
@@ -340,6 +374,40 @@ function toBigInt(v: unknown): bigint {
   if (typeof v === 'string') return BigInt(v);
   if (typeof v === 'number') return BigInt(v);
   return 0n;
+}
+
+function asDate(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const next = new Date(value);
+    return Number.isNaN(next.getTime()) ? null : next;
+  }
+  return null;
+}
+
+function asNullableInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+    return parseInt(value, 10);
+  }
+  return null;
+}
+
+function filingTypeFromEvent(eventType: string): BreederFilingType | null {
+  if (eventType.startsWith('BREEDER_TRANSFER_CONFIRMATION_')) {
+    return 'TRANSFER_CONFIRMATION';
+  }
+  if (eventType.startsWith('BREEDER_ACCIDENTAL_LITTER_REGISTRATION_')) {
+    return 'ACCIDENTAL_LITTER_REGISTRATION';
+  }
+  if (eventType.startsWith('BREEDER_QUARTERLY_TRANSITION_REPORT_')) {
+    return 'QUARTERLY_TRANSITION_REPORT';
+  }
+  return null;
 }
 
 // ============================================
@@ -897,6 +965,86 @@ function dispatchEvent(state: RebuildState, event: DomainEvent): void {
     return;
   }
 
+  // --- BREEDER COMPLIANCE EVENTS ---
+  if (
+    t === 'BREEDER_TRANSFER_CONFIRMATION_FILED' ||
+    t === 'BREEDER_TRANSFER_CONFIRMATION_AMENDED' ||
+    t === 'BREEDER_ACCIDENTAL_LITTER_REGISTRATION_FILED' ||
+    t === 'BREEDER_ACCIDENTAL_LITTER_REGISTRATION_AMENDED' ||
+    t === 'BREEDER_QUARTERLY_TRANSITION_REPORT_FILED' ||
+    t === 'BREEDER_QUARTERLY_TRANSITION_REPORT_AMENDED'
+  ) {
+    const filingType = filingTypeFromEvent(t);
+    if (!filingType) {
+      return;
+    }
+
+    const filingId = event.aggregateId;
+    const existing = state.breederComplianceQueue.get(filingId);
+    const occurredAt = asDate(d.occurredAt) ?? existing?.occurredAt ?? event.occurredAt;
+    const submittedAt = asDate(d.submittedAt) ?? event.ingestedAt;
+    const amendedAt = t.endsWith('_AMENDED') ? event.ingestedAt : existing?.amendedAt ?? null;
+    const existingCurePeriodDays = existing?.cureDeadlineAt
+      ? Math.max(1, Math.ceil((existing.cureDeadlineAt.getTime() - existing.dueAt.getTime()) / (24 * 60 * 60 * 1000)))
+      : null;
+    const curePeriodDays = asNullableInteger(d.curePeriodDays) ?? existingCurePeriodDays;
+    const reportingYear = asNullableInteger(d.reportingYear) ?? existing?.reportingYear ?? null;
+    const reportingQuarter = asNullableInteger(d.reportingQuarter) ?? existing?.reportingQuarter ?? null;
+
+    const dueAt = calculateDueAt({
+      filingType,
+      occurredAt: occurredAt ?? undefined,
+      dueAt: asDate(d.dueAt) ?? existing?.dueAt,
+      quarterlyCycle: (reportingYear && reportingQuarter && reportingQuarter >= 1 && reportingQuarter <= 4)
+        ? { reportingYear, reportingQuarter: reportingQuarter as 1 | 2 | 3 | 4 }
+        : undefined,
+      quarterlyDueOffsetDays: asNullableInteger(d.quarterlyDueOffsetDays) ?? undefined,
+    });
+
+    const curedAt = asDate(d.curedAt) ?? existing?.curedAt ?? null;
+    const status = calculateComplianceStatus({
+      dueAt,
+      asOf: event.ingestedAt,
+      submittedAt,
+      curedAt,
+      curePeriodDays,
+    });
+
+    state.breederComplianceQueue.set(filingId, {
+      filingId,
+      licenseId: (typeof d.licenseId === 'string' && d.licenseId.length > 0) ? d.licenseId : existing?.licenseId ?? null,
+      grantCycleId: event.grantCycleId,
+      filingType,
+      reportingYear,
+      reportingQuarter,
+      occurredAt,
+      dueAt,
+      cureDeadlineAt: calculateCureDeadlineAt(dueAt, curePeriodDays),
+      submittedAt,
+      amendedAt,
+      curedAt,
+      status,
+      lastEventId: event.eventId,
+      lastEventIngestedAt: event.ingestedAt,
+    });
+    return;
+  }
+
+  if (t === 'BREEDER_FILING_CURED') {
+    const filingId = (typeof d.filingId === 'string' && d.filingId.length > 0) ? d.filingId : event.aggregateId;
+    const existing = state.breederComplianceQueue.get(filingId);
+    if (!existing) {
+      return;
+    }
+
+    const curedAt = asDate(d.curedAt) ?? event.ingestedAt;
+    existing.curedAt = curedAt;
+    existing.status = 'CURED';
+    existing.lastEventId = event.eventId;
+    existing.lastEventIngestedAt = event.ingestedAt;
+    return;
+  }
+
   // All other events (FRAUD_SIGNAL_DETECTED, ATTACHMENT_ADDED, etc.) — no projection impact
 }
 
@@ -1022,10 +1170,50 @@ async function insertCloseoutProjection(client: PoolClient, closeouts: Map<strin
   }
 }
 
+async function insertBreederComplianceQueueProjection(client: PoolClient, filings: Map<string, BreederComplianceState>, wm: ProjectionWatermark): Promise<void> {
+  for (const filing of filings.values()) {
+    const recomputedStatus = calculateComplianceStatus({
+      dueAt: filing.dueAt,
+      asOf: wm.rebuiltAt,
+      submittedAt: filing.submittedAt,
+      curedAt: filing.curedAt,
+      curePeriodDays: filing.cureDeadlineAt
+        ? Math.max(1, Math.ceil((filing.cureDeadlineAt.getTime() - filing.dueAt.getTime()) / (24 * 60 * 60 * 1000)))
+        : null,
+    });
+
+    await client.query(
+      `INSERT INTO breeder_compliance_queue_projection (filing_id, license_id, grant_cycle_id, filing_type, reporting_year, reporting_quarter, occurred_at, due_at, cure_deadline_at, submitted_at, amended_at, cured_at, status, last_event_id, last_event_ingested_at, rebuilt_at, watermark_ingested_at, watermark_event_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+      [
+        filing.filingId,
+        filing.licenseId,
+        filing.grantCycleId,
+        filing.filingType,
+        filing.reportingYear,
+        filing.reportingQuarter,
+        filing.occurredAt,
+        filing.dueAt,
+        filing.cureDeadlineAt,
+        filing.submittedAt,
+        filing.amendedAt,
+        filing.curedAt,
+        recomputedStatus,
+        filing.lastEventId,
+        filing.lastEventIngestedAt,
+        wm.rebuiltAt,
+        wm.watermarkIngestedAt,
+        wm.watermarkEventId,
+      ]
+    );
+  }
+}
+
 const ALL_PROJECTION_TABLES = [
   'oasis_export_batch_items_projection',  // FK child first
   'oasis_export_batches_projection',
   'grant_cycle_closeout_projection',
+  'breeder_compliance_queue_projection',
   'invoice_adjustments_projection',
   'payments_projection',
   'invoices_projection',
@@ -1109,6 +1297,7 @@ export async function rebuildAllProjections(pool: Pool): Promise<RebuildResult> 
     await insertAdjustmentsProjection(client, state.adjustments, projectionWatermark);
     await insertOasisBatchesProjection(client, state.oasisBatches, projectionWatermark);
     await insertCloseoutProjection(client, state.closeouts, projectionWatermark);
+    await insertBreederComplianceQueueProjection(client, state.breederComplianceQueue, projectionWatermark);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');

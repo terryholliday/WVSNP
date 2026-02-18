@@ -45,9 +45,12 @@ const limiter = rateLimit({
 app.use('/api/v1', limiter);
 
 // Public endpoints have stricter rate limiting
+const publicRateLimitMax = process.env.NODE_ENV === 'test'
+  ? 500
+  : 10;
 const publicLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10, // 10 requests per minute
+  max: publicRateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -85,7 +88,7 @@ const authenticate = createAuthMiddleware(pool, JWT_SECRET);
 app.use('/api/v1/clinics', authenticate('clinic'), createClinicRoutes(pool, eventStore, idempotency));
 app.use('/api/v1/grantees', authenticate('grantee'), createGranteeRoutes(pool, eventStore, idempotency));
 app.use('/api/v1/admin', authenticate('admin'), createAdminRoutes(pool, eventStore, idempotency));
-app.use('/api/v1/public', publicLimiter, authenticate('public'), createPublicRoutes(pool, eventStore));
+app.use('/api/v1/public', publicLimiter, authenticate('public'), createPublicRoutes(pool, eventStore, idempotency));
 
 // Error handlers (must be last)
 app.use(notFoundHandler);

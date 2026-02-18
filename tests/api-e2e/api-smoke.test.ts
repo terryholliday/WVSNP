@@ -2,6 +2,8 @@ import { Pool } from 'pg';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { Server } from 'http';
+import { createServer } from 'http';
+import crypto from 'crypto';
 
 let pool: Pool;
 let server: Server;
@@ -78,7 +80,7 @@ describe('API E2E smoke', () => {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         await pool.query(
-          'TRUNCATE event_log, vouchers_projection, idempotency_cache CASCADE'
+          'TRUNCATE event_log, vouchers_projection, idempotency_cache, breeder_compliance_queue_projection, marketplace_partner_api_keys, marketplace_partner_webhooks, marketplace_webhook_deliveries CASCADE'
         );
         return; // Success
       } catch (error: any) {
@@ -383,8 +385,10 @@ describe('API E2E smoke', () => {
         'LICENSE',
         $1::uuid,
         'BREEDER_LICENSED',
-        '{"licenseNumber":"BR-2026-0301","county":"KANAWHA"}'::jsonb,
-        NOW(), NOW(), 'BARKWV',
+        $2::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
         '44444444-4444-4444-8444-444444444444'::uuid,
         NULL,
         '44444444-4444-4444-8444-555555555555'::uuid,
@@ -393,16 +397,31 @@ describe('API E2E smoke', () => {
       (
         '018f0b63-0000-7000-8000-000000000105',
         'LICENSE',
-        $2::uuid,
+        $3::uuid,
         'TRANSPORTER_LICENSED',
-        '{"licenseNumber":"TR-2026-0901","county":"CABELL"}'::jsonb,
-        NOW(), NOW(), 'BARKWV',
+        $4::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
         '55555555-5555-4555-8555-555555555555'::uuid,
         NULL,
         '55555555-5555-4555-8555-666666666666'::uuid,
         'SYSTEM'
       )`,
-      [licenseA, licenseB]
+      [
+        licenseA,
+        JSON.stringify({
+          licenseNumber: 'BR-2026-0301',
+          county: 'KANAWHA',
+          expiresOn: '2026-12-31T23:59:59.000Z',
+        }),
+        licenseB,
+        JSON.stringify({
+          licenseNumber: 'TR-2026-0901',
+          county: 'CABELL',
+          expiresOn: '2026-12-31T23:59:59.000Z',
+        }),
+      ]
     );
 
     const res = await fetch(`${baseUrl}/api/v1/public/verify/batch`, {
@@ -469,5 +488,617 @@ describe('API E2E smoke', () => {
       [body.artifactId]
     );
     expect(hashAnchoredEvents.rows[0].count).toBe(1);
+  });
+
+  test('marketplace verify-listing returns ALLOW decision with signed assertion and emits listing event', async () => {
+    const partnerApiKey = 'wvsnp_marketplace_partner_alpha_test_key';
+    const partnerId = 'partner-alpha';
+    const licenseId = '66666666-6666-7666-8666-666666666666';
+    const keyHash = crypto.createHash('sha256').update(partnerApiKey, 'utf8').digest('hex');
+
+    await pool.query(
+      `INSERT INTO marketplace_partner_api_keys (
+         key_id, partner_id, key_hash, scopes, webhook_secret, rate_limit_per_minute, expires_at
+       ) VALUES (
+         'aaaaaaaa-1111-4111-8111-111111111111'::uuid,
+         $1,
+         $2,
+         '["MARKETPLACE_VERIFY"]'::jsonb,
+         'partner-alpha-webhook-secret',
+         120,
+         NOW() + interval '30 days'
+       )`,
+      [partnerId, keyHash]
+    );
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000106',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        $2::jsonb,
+        NOW(),
+        NOW(),
+        'BARKWV',
+        '66666666-6666-4666-8666-666666666666'::uuid,
+        NULL,
+        '66666666-6666-4666-8666-777777777777'::uuid,
+        'SYSTEM'
+      )`,
+      [
+        licenseId,
+        JSON.stringify({
+          licenseNumber: 'BR-2026-0666',
+          county: 'KANAWHA',
+          expiresOn: '2026-12-31T23:59:59.000Z',
+        }),
+      ]
+    );
+
+    const res = await fetch(`${baseUrl}/api/v1/public/marketplace/verify-listing`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${partnerApiKey}`,
+      },
+      body: JSON.stringify({
+        listingId: 'listing-001',
+        licenseId,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.partnerId).toBe(partnerId);
+    expect(body.outcome.listingId).toBe('listing-001');
+    expect(body.outcome.decision).toBe('ALLOW');
+    expect(body.outcome.reasonCodes).toEqual(['LICENSE_ACTIVE']);
+    expect(body.outcome.assertion.token).toMatch(/^barkwv-marketplace-v1\./);
+    expect(body.replayed).toBe(false);
+
+    const listingEvents = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE event_type = 'MARKETPLACE_LISTING_VERIFIED'
+         AND event_data->>'partnerId' = $1
+         AND event_data->>'listingId' = 'listing-001'`,
+      [partnerId]
+    );
+    expect(listingEvents.rows[0].count).toBe(1);
+  });
+
+  test('marketplace verify-listing idempotency replays response and prevents duplicate events', async () => {
+    const partnerApiKey = 'wvsnp_marketplace_partner_beta_test_key';
+    const partnerId = 'partner-beta';
+    const licenseId = '77777777-7777-7777-8777-777777777777';
+    const keyHash = crypto.createHash('sha256').update(partnerApiKey, 'utf8').digest('hex');
+
+    await pool.query(
+      `INSERT INTO marketplace_partner_api_keys (
+         key_id, partner_id, key_hash, scopes, webhook_secret, rate_limit_per_minute, expires_at
+       ) VALUES (
+         'bbbbbbbb-2222-4222-8222-222222222222'::uuid,
+         $1,
+         $2,
+         '["MARKETPLACE_VERIFY"]'::jsonb,
+         'partner-beta-webhook-secret',
+         120,
+         NOW() + interval '30 days'
+       )`,
+      [partnerId, keyHash]
+    );
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000107',
+        'LICENSE',
+        $1::uuid,
+        'TRANSPORTER_LICENSED',
+        '{"licenseNumber":"TR-2026-0701","county":"CABELL","expiresOn":"2026-12-31T23:59:59.000Z"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        '77777777-7777-4777-8777-777777777777'::uuid,
+        NULL,
+        '77777777-7777-4777-8777-888888888888'::uuid,
+        'SYSTEM'
+      )`,
+      [licenseId]
+    );
+
+    const idempotencyKey = 'idem-marketplace-listing-001';
+    const requestBody = {
+      listingId: 'listing-dup-001',
+      licenseId,
+    };
+
+    const first = await fetch(`${baseUrl}/api/v1/public/marketplace/verify-listing`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${partnerApiKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    expect(firstBody.replayed).toBe(false);
+
+    const second = await fetch(`${baseUrl}/api/v1/public/marketplace/verify-listing`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${partnerApiKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    expect(second.status).toBe(200);
+    const secondBody = await second.json();
+    expect(secondBody.replayed).toBe(true);
+    expect(secondBody.outcome.assertion.assertionId).toBe(firstBody.outcome.assertion.assertionId);
+
+    const listingEvents = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE event_type = 'MARKETPLACE_LISTING_VERIFIED'
+         AND event_data->>'partnerId' = $1
+         AND event_data->>'listingId' = 'listing-dup-001'`,
+      [partnerId]
+    );
+    expect(listingEvents.rows[0].count).toBe(1);
+  });
+
+  test('marketplace status drift emits webhook with valid HMAC signature', async () => {
+    const partnerApiKey = 'wvsnp_marketplace_partner_gamma_test_key';
+    const partnerId = 'partner-gamma';
+    const licenseId = '88888888-8888-7888-8888-888888888888';
+    const keyHash = crypto.createHash('sha256').update(partnerApiKey, 'utf8').digest('hex');
+
+    await pool.query(
+      `INSERT INTO marketplace_partner_api_keys (
+         key_id, partner_id, key_hash, scopes, webhook_secret, rate_limit_per_minute, expires_at
+       ) VALUES (
+         'cccccccc-3333-4333-8333-333333333333'::uuid,
+         $1,
+         $2,
+         '["MARKETPLACE_VERIFY","MARKETPLACE_WEBHOOKS"]'::jsonb,
+         'partner-gamma-webhook-secret',
+         120,
+         NOW() + interval '30 days'
+       )`,
+      [partnerId, keyHash]
+    );
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000108',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        '{"licenseNumber":"BR-2026-0888","county":"KANAWHA","expiresOn":"2026-12-31T23:59:59.000Z"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        '88888888-8888-4888-8888-888888888888'::uuid,
+        NULL,
+        '88888888-8888-4888-8888-999999999999'::uuid,
+        'SYSTEM'
+      )`,
+      [licenseId]
+    );
+
+    let receivedBody = '';
+    let receivedHeaders: Record<string, string | string[] | undefined> = {};
+    const webhookServer = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        receivedBody = Buffer.concat(chunks).toString('utf8');
+        receivedHeaders = req.headers;
+        res.statusCode = 200;
+        res.end('ok');
+      });
+    });
+
+    await new Promise<void>((resolve) => webhookServer.listen(0, '127.0.0.1', () => resolve()));
+
+    try {
+      const address = webhookServer.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('FAILED_TO_START_WEBHOOK_SERVER');
+      }
+
+      const registerRes = await fetch(`${baseUrl}/api/v1/public/marketplace/webhooks/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${partnerApiKey}`,
+        },
+        body: JSON.stringify({
+          callbackUrl: `http://127.0.0.1:${address.port}/hooks/marketplace`,
+          eventTypes: ['MARKETPLACE_LICENSE_STATUS_DRIFT_DETECTED'],
+        }),
+      });
+      expect(registerRes.status).toBe(201);
+      const registerBody = await registerRes.json();
+
+      const firstVerify = await fetch(`${baseUrl}/api/v1/public/marketplace/verify-listing`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${partnerApiKey}`,
+        },
+        body: JSON.stringify({
+          listingId: 'listing-drift-001',
+          licenseId,
+        }),
+      });
+      expect(firstVerify.status).toBe(200);
+
+      await pool.query(
+        `INSERT INTO event_log (
+          event_id, aggregate_type, aggregate_id, event_type, event_data,
+          occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+          actor_id, actor_type
+        ) VALUES (
+          '018f0b63-0000-7000-8000-000000000109',
+          'LICENSE',
+          $1::uuid,
+          'BREEDER_LICENSE_STATUS_CHANGED',
+          '{"previousStatus":"ACTIVE","newStatus":"SUSPENDED","licenseNumber":"BR-2026-0888"}'::jsonb,
+          NOW(), NOW(), 'BARKWV',
+          '99999999-9999-4999-8999-999999999999'::uuid,
+          '99999999-9999-4999-8999-aaaaaaaaaaaa'::uuid,
+          '99999999-9999-4999-8999-bbbbbbbbbbbb'::uuid,
+          'ADMIN'
+        )`,
+        [licenseId]
+      );
+
+      const driftVerify = await fetch(`${baseUrl}/api/v1/public/marketplace/verify-listing`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${partnerApiKey}`,
+        },
+        body: JSON.stringify({
+          listingId: 'listing-drift-001',
+          licenseId,
+        }),
+      });
+      expect(driftVerify.status).toBe(200);
+      const driftBody = await driftVerify.json();
+      expect(driftBody.outcome.decision).toBe('BLOCK');
+      expect(driftBody.outcome.reasonCodes).toContain('LICENSE_SUSPENDED');
+
+      let deliveriesCount = 0;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const deliveryRows = await pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM marketplace_webhook_deliveries
+           WHERE partner_id = $1
+             AND event_type = 'MARKETPLACE_LICENSE_STATUS_DRIFT_DETECTED'`,
+          [partnerId]
+        );
+        deliveriesCount = deliveryRows.rows[0].count;
+        if (deliveriesCount > 0) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(deliveriesCount).toBe(1);
+
+      const secretRow = await pool.query(
+        `SELECT webhook_secret
+         FROM marketplace_partner_webhooks
+         WHERE subscription_id = $1::uuid`,
+        [registerBody.subscriptionId]
+      );
+      expect(secretRow.rows.length).toBe(1);
+      const webhookSecret = secretRow.rows[0].webhook_secret as string;
+
+      const timestamp = String(receivedHeaders['x-marketplace-webhook-timestamp']);
+      const signature = String(receivedHeaders['x-marketplace-webhook-signature']);
+      const expectedSignature = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(`${timestamp}.${receivedBody}`, 'utf8')
+        .digest('hex');
+      expect(signature).toBe(expectedSignature);
+
+      const driftEvents = await pool.query(
+        `SELECT COUNT(*)::int AS count
+         FROM event_log
+         WHERE event_type = 'MARKETPLACE_LICENSE_STATUS_DRIFT_DETECTED'
+           AND event_data->>'partnerId' = $1
+           AND event_data->>'listingId' = 'listing-drift-001'`,
+        [partnerId]
+      );
+      expect(driftEvents.rows[0].count).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        webhookServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  test('breeder transfer confirmation filing is idempotent and projects queue status', async () => {
+    const licenseId = '91c3717a-6f9d-4f2e-9328-0c0d24f04fd8';
+    const occurredAt = new Date('2026-02-15T12:00:00.000Z').toISOString();
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000120',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        '{"licenseNumber":"BR-2026-1200","county":"KANAWHA","expiresOn":"2026-12-31T23:59:59.000Z"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        '7e34deea-173f-4ff5-9f7f-df59f53ea3a1'::uuid,
+        NULL,
+        'f1fca844-322a-4f69-8e9a-9b43ad08b4de'::uuid,
+        'SYSTEM'
+      )`,
+      [licenseId]
+    );
+
+    const requestBody = {
+      licenseId,
+      occurredAt,
+      transferId: 'xfer-0001',
+      animalCount: 2,
+      notes: 'Initial transfer confirmation',
+    };
+
+    const first = await fetch(`${baseUrl}/api/v1/public/breeder/filings/transfer-confirmation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-breeder-transfer-0001',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+    expect(firstBody.replayed).toBe(false);
+    expect(firstBody.filing.filingType).toBe('TRANSFER_CONFIRMATION');
+    expect(firstBody.filing.filingStatus).toBe('SUBMITTED');
+
+    const second = await fetch(`${baseUrl}/api/v1/public/breeder/filings/transfer-confirmation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-breeder-transfer-0001',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(second.status).toBe(200);
+    const secondBody = await second.json();
+    expect(secondBody.replayed).toBe(true);
+    expect(secondBody.filingId).toBe(firstBody.filingId);
+
+    const eventRows = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM event_log
+       WHERE aggregate_type = 'BREEDER_REPORTING'
+         AND aggregate_id = $1::uuid
+         AND event_type = 'BREEDER_TRANSFER_CONFIRMATION_FILED'`,
+      [firstBody.filingId]
+    );
+    expect(eventRows.rows[0].count).toBe(1);
+
+    const projection = await pool.query(
+      `SELECT filing_type, status, submitted_at, amended_at
+       FROM breeder_compliance_queue_projection
+       WHERE filing_id = $1::uuid`,
+      [firstBody.filingId]
+    );
+    expect(projection.rows.length).toBe(1);
+    expect(projection.rows[0].filing_type).toBe('TRANSFER_CONFIRMATION');
+    expect(['ON_TIME', 'DUE_SOON']).toContain(projection.rows[0].status);
+    expect(projection.rows[0].submitted_at).toBeTruthy();
+    expect(projection.rows[0].amended_at).toBeNull();
+
+    const getById = await fetch(`${baseUrl}/api/v1/public/breeder/filings/${firstBody.filingId}`);
+    expect(getById.status).toBe(200);
+    const getByIdBody = await getById.json();
+    expect(getByIdBody.filingId).toBe(firstBody.filingId);
+    expect(getByIdBody.filingType).toBe('TRANSFER_CONFIRMATION');
+
+    const list = await fetch(`${baseUrl}/api/v1/public/breeder/filings?licenseId=${licenseId}&filingType=TRANSFER_CONFIRMATION&limit=10`);
+    expect(list.status).toBe(200);
+    const listBody = await list.json();
+    expect(listBody.count).toBe(1);
+    expect(listBody.items[0].filingId).toBe(firstBody.filingId);
+  });
+
+  test('breeder filing amendment appends new event and marks overdue filing as cured', async () => {
+    const licenseId = '0de0e9d3-916c-41a9-bf68-e3226b7ce8db';
+    const originalOccurredAt = '2025-01-01T12:00:00.000Z';
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES (
+        '018f0b63-0000-7000-8000-000000000121',
+        'LICENSE',
+        $1::uuid,
+        'BREEDER_LICENSED',
+        '{"licenseNumber":"BR-2025-0099","county":"MASON","expiresOn":"2026-12-31T23:59:59.000Z"}'::jsonb,
+        NOW(), NOW(), 'BARKWV',
+        'c80b220d-f8b6-4919-a1ba-d6775ad8b3cb'::uuid,
+        NULL,
+        '3c8fe8ce-88f0-4477-a25f-3ceea0988e2a'::uuid,
+        'SYSTEM'
+      )`,
+      [licenseId]
+    );
+
+    const filed = await fetch(`${baseUrl}/api/v1/public/breeder/filings/transfer-confirmation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        licenseId,
+        occurredAt: originalOccurredAt,
+        transferId: 'xfer-overdue-001',
+        animalCount: 1,
+      }),
+    });
+    expect(filed.status).toBe(201);
+    const filedBody = await filed.json();
+
+    const amended = await fetch(`${baseUrl}/api/v1/public/breeder/filings/${filedBody.filingId}/transfer-confirmation/amend`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        occurredAt: new Date().toISOString(),
+        transferId: 'xfer-overdue-001-corrected',
+        animalCount: 2,
+      }),
+    });
+
+    expect(amended.status).toBe(200);
+    const amendedBody = await amended.json();
+    expect(amendedBody.filing.filingStatus).toBe('AMENDED');
+    expect(amendedBody.filing.deadlineStatus).toBe('CURED');
+
+    const timeline = await pool.query(
+      `SELECT event_type
+       FROM event_log
+       WHERE aggregate_type = 'BREEDER_REPORTING'
+         AND aggregate_id = $1::uuid
+       ORDER BY ingested_at ASC, event_id ASC`,
+      [filedBody.filingId]
+    );
+
+    expect(timeline.rows.map((row) => row.event_type)).toEqual([
+      'BREEDER_TRANSFER_CONFIRMATION_FILED',
+      'BREEDER_TRANSFER_CONFIRMATION_AMENDED',
+    ]);
+
+    const projection = await pool.query(
+      `SELECT status, amended_at, cured_at
+       FROM breeder_compliance_queue_projection
+       WHERE filing_id = $1::uuid`,
+      [filedBody.filingId]
+    );
+    expect(projection.rows.length).toBe(1);
+    expect(projection.rows[0].status).toBe('CURED');
+    expect(projection.rows[0].amended_at).toBeTruthy();
+    expect(projection.rows[0].cured_at).toBeTruthy();
+  });
+
+  test('breeder compliance queue feed returns prioritized statuses for regulators', async () => {
+    process.env.BARK_COMPLIANCE_READ_KEY = 'test-compliance-key';
+
+    await pool.query(
+      `INSERT INTO breeder_compliance_queue_projection (
+        filing_id,
+        license_id,
+        grant_cycle_id,
+        filing_type,
+        reporting_year,
+        reporting_quarter,
+        occurred_at,
+        due_at,
+        cure_deadline_at,
+        submitted_at,
+        amended_at,
+        cured_at,
+        status,
+        last_event_id,
+        last_event_ingested_at,
+        rebuilt_at,
+        watermark_ingested_at,
+        watermark_event_id
+      ) VALUES
+      (
+        '66666666-6666-4666-8666-666666666661'::uuid,
+        '77777777-7777-4777-8777-777777777771'::uuid,
+        'BARKWV',
+        'TRANSFER_CONFIRMATION',
+        NULL,
+        NULL,
+        '2026-02-01T12:00:00.000Z',
+        '2026-02-08T12:00:00.000Z',
+        '2026-02-15T12:00:00.000Z',
+        '2026-02-10T08:00:00.000Z',
+        NULL,
+        NULL,
+        'OVERDUE',
+        '018f0b63-0000-7000-8000-00000000bb01'::uuid,
+        '2026-02-10T08:00:00.000Z',
+        NOW(),
+        NOW(),
+        '018f0b63-0000-7000-8000-00000000bb09'::uuid
+      ),
+      (
+        '66666666-6666-4666-8666-666666666662'::uuid,
+        '77777777-7777-4777-8777-777777777772'::uuid,
+        'BARKWV',
+        'QUARTERLY_TRANSITION_REPORT',
+        2026,
+        1,
+        '2026-01-01T00:00:00.000Z',
+        '2026-04-30T23:59:59.000Z',
+        NULL,
+        '2026-04-15T12:00:00.000Z',
+        NULL,
+        NULL,
+        'ON_TIME',
+        '018f0b63-0000-7000-8000-00000000bb02'::uuid,
+        '2026-04-15T12:00:00.000Z',
+        NOW(),
+        NOW(),
+        '018f0b63-0000-7000-8000-00000000bb10'::uuid
+      )`
+    );
+
+    const forbiddenRes = await fetch(`${baseUrl}/api/v1/public/compliance/breeder-queue`);
+    expect(forbiddenRes.status).toBe(403);
+
+    const res = await fetch(`${baseUrl}/api/v1/public/compliance/breeder-queue?limit=10`, {
+      headers: {
+        'x-wvda-admin-key': 'test-compliance-key',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(2);
+    expect(body.items[0].status).toBe('OVERDUE');
+    expect(body.items[0].filingType).toBe('TRANSFER_CONFIRMATION');
+
+    const filteredRes = await fetch(`${baseUrl}/api/v1/public/compliance/breeder-queue?status=overdue`, {
+      headers: {
+        'x-wvda-admin-key': 'test-compliance-key',
+      },
+    });
+    expect(filteredRes.status).toBe(200);
+    const filteredBody = await filteredRes.json();
+    expect(filteredBody.count).toBe(1);
+    expect(filteredBody.items[0].status).toBe('OVERDUE');
   });
 });

@@ -14,6 +14,7 @@ import { IdempotencyService } from '../src/application/idempotency-service';
 import { renderOasisFile, InvoiceForExport, BatchMetadata } from '../src/domain/oasis/renderer';
 import { createInitialBatchState, applyBatchEvent, checkBatchInvariant, ExportBatchId, BatchFingerprint } from '../src/domain/oasis/batch-logic';
 import { isEventBlockedAfterClose } from '../src/domain/closeout/cycle-logic';
+import { calculateComplianceStatus, calculateDueAt } from '../src/domain/compliance/timeline-logic';
 import { rebuildAllProjections } from '../src/projections/rebuild';
 
 const pool = process.env.DATABASE_URL
@@ -43,7 +44,7 @@ describe('Phase 4 v5.2 Conformance Tests', () => {
   }, 30_000);
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE event_log, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache CASCADE');
+    await pool.query('TRUNCATE event_log, breeder_compliance_queue_projection, oasis_export_batches_projection, oasis_export_batch_items_projection, grant_cycle_closeout_projection, invoices_projection, vet_clinics_projection, claims_projection, payments_projection, invoice_adjustments_projection, idempotency_cache CASCADE');
   });
 
   afterAll(async () => {
@@ -786,6 +787,139 @@ describe('Phase 4 v5.2 Conformance Tests', () => {
     // The key assertion is that the OASIS batch (created via events) survived.
     expect(rebuildResult.rebuiltAt).toBeDefined();
     expect(rebuildResult.watermark.eventId).toBeDefined();
+  });
+
+  /**
+   * TEST 15: Breeder Timeline Logic
+   * Due/overdue/cured status transitions are deterministic
+   */
+  test('TEST 15: Breeder compliance timeline status transitions', () => {
+    const occurredAt = new Date('2026-02-01T12:00:00.000Z');
+    const dueAt = calculateDueAt({
+      filingType: 'TRANSFER_CONFIRMATION',
+      occurredAt,
+    });
+
+    // Before due date but within 3-day window
+    const dueSoonAsOf = new Date('2026-02-06T12:00:00.000Z');
+    expect(calculateComplianceStatus({ dueAt, asOf: dueSoonAsOf })).toBe('DUE_SOON');
+
+    // After due date
+    const overdueAsOf = new Date('2026-02-10T12:00:00.000Z');
+    expect(calculateComplianceStatus({ dueAt, asOf: overdueAsOf })).toBe('OVERDUE');
+
+    // Late submit inside cure window => CURED
+    const lateSubmittedAt = new Date('2026-02-09T00:00:00.000Z');
+    expect(
+      calculateComplianceStatus({
+        dueAt,
+        asOf: overdueAsOf,
+        submittedAt: lateSubmittedAt,
+        curePeriodDays: 7,
+      })
+    ).toBe('CURED');
+  });
+
+  /**
+   * TEST 16: Breeder Compliance Queue Projection Replay
+   * Filed + amended + cured events rebuild deterministic queue state
+   */
+  test('TEST 16: Breeder compliance queue projection rebuild', async () => {
+    const filingId = '9aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const licenseId = '8bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const correlationId = '7ccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const actorId = '6ddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+    await pool.query(
+      `INSERT INTO event_log (
+        event_id, aggregate_type, aggregate_id, event_type, event_data,
+        occurred_at, ingested_at, grant_cycle_id, correlation_id, causation_id,
+        actor_id, actor_type
+      ) VALUES
+      (
+        '018f0b63-0000-7000-8000-00000000aa01',
+        'BREEDER_REPORTING',
+        $1::uuid,
+        'BREEDER_TRANSFER_CONFIRMATION_FILED',
+        $2::jsonb,
+        '2026-02-01T12:00:00.000Z',
+        '2026-02-01T12:00:00.000Z',
+        'BARKWV',
+        $3::uuid,
+        NULL,
+        $4::uuid,
+        'SYSTEM'
+      ),
+      (
+        '018f0b63-0000-7000-8000-00000000aa02',
+        'BREEDER_REPORTING',
+        $1::uuid,
+        'BREEDER_TRANSFER_CONFIRMATION_AMENDED',
+        $5::jsonb,
+        '2026-02-11T10:00:00.000Z',
+        '2026-02-11T10:00:00.000Z',
+        'BARKWV',
+        $3::uuid,
+        '018f0b63-0000-7000-8000-00000000aa01'::uuid,
+        $4::uuid,
+        'ADMIN'
+      ),
+      (
+        '018f0b63-0000-7000-8000-00000000aa03',
+        'BREEDER_REPORTING',
+        $1::uuid,
+        'BREEDER_FILING_CURED',
+        $6::jsonb,
+        '2026-02-11T12:00:00.000Z',
+        '2026-02-11T12:00:00.000Z',
+        'BARKWV',
+        $3::uuid,
+        '018f0b63-0000-7000-8000-00000000aa02'::uuid,
+        $4::uuid,
+        'ADMIN'
+      )`,
+      [
+        filingId,
+        JSON.stringify({
+          filingId,
+          licenseId,
+          occurredAt: '2026-02-01T12:00:00.000Z',
+          submittedAt: '2026-02-01T12:30:00.000Z',
+          curePeriodDays: 7,
+        }),
+        correlationId,
+        actorId,
+        JSON.stringify({
+          filingId,
+          licenseId,
+          occurredAt: '2026-02-01T12:00:00.000Z',
+          submittedAt: '2026-02-11T10:00:00.000Z',
+          curePeriodDays: 7,
+        }),
+        JSON.stringify({
+          filingId,
+          curedAt: '2026-02-11T12:00:00.000Z',
+        }),
+      ]
+    );
+
+    const rebuildResult = await rebuildAllProjections(pool);
+    expect(rebuildResult.eventsReplayed).toBeGreaterThanOrEqual(3);
+
+    const queue = await pool.query(
+      `SELECT filing_id::text, status, due_at, cure_deadline_at, cured_at, reporting_year, reporting_quarter
+         FROM breeder_compliance_queue_projection
+        WHERE filing_id = $1::uuid`,
+      [filingId]
+    );
+
+    expect(queue.rows.length).toBe(1);
+    expect(queue.rows[0].status).toBe('CURED');
+    expect(queue.rows[0].due_at).toBeTruthy();
+    expect(queue.rows[0].cure_deadline_at).toBeTruthy();
+    expect(queue.rows[0].cured_at).toBeTruthy();
+    expect(queue.rows[0].reporting_year).toBeNull();
+    expect(queue.rows[0].reporting_quarter).toBeNull();
   });
 });
 

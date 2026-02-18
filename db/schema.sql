@@ -166,6 +166,34 @@ CREATE INDEX IF NOT EXISTS idx_transparency_period
   ON transparency_artifacts_projection(snapshot_period, published_at DESC);
 
 
+CREATE TABLE IF NOT EXISTS breeder_compliance_queue_projection (
+  filing_id UUID PRIMARY KEY,
+  license_id UUID,
+  grant_cycle_id VARCHAR(20) NOT NULL,
+  filing_type VARCHAR(50) NOT NULL,
+  reporting_year INTEGER,
+  reporting_quarter INTEGER,
+  occurred_at TIMESTAMPTZ,
+  due_at TIMESTAMPTZ NOT NULL,
+  cure_deadline_at TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
+  amended_at TIMESTAMPTZ,
+  cured_at TIMESTAMPTZ,
+  status VARCHAR(20) NOT NULL,
+  last_event_id UUID NOT NULL,
+  last_event_ingested_at TIMESTAMPTZ NOT NULL,
+  rebuilt_at TIMESTAMPTZ NOT NULL,
+  watermark_ingested_at TIMESTAMPTZ NOT NULL,
+  watermark_event_id UUID NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_breeder_compliance_status_due
+  ON breeder_compliance_queue_projection(status, due_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_breeder_compliance_license
+  ON breeder_compliance_queue_projection(license_id, due_at ASC);
+
+
 -- ============================================
 -- PHASE 2 PROJECTIONS
 -- ============================================
@@ -242,6 +270,58 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at
   ON idempotency_cache(expires_at);
 
 -- No mutation trigger on idempotency_cache, as UPDATE is allowed (LAW 4.4)
+
+-- ============================================
+-- MARKETPLACE PARTNER OPERATIONS (Agent 5)
+-- ============================================
+CREATE TABLE IF NOT EXISTS marketplace_partner_api_keys (
+  key_id UUID PRIMARY KEY,
+  partner_id VARCHAR(120) NOT NULL,
+  key_hash VARCHAR(64) NOT NULL,
+  scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  webhook_secret TEXT,
+  rate_limit_per_minute INTEGER,
+  revoked_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ,
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_partner_api_keys_hash
+  ON marketplace_partner_api_keys(key_hash);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_partner_api_keys_partner
+  ON marketplace_partner_api_keys(partner_id);
+
+CREATE TABLE IF NOT EXISTS marketplace_partner_webhooks (
+  subscription_id UUID PRIMARY KEY,
+  partner_id VARCHAR(120) NOT NULL,
+  callback_url TEXT NOT NULL,
+  webhook_secret TEXT NOT NULL,
+  event_types JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status VARCHAR(20) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_partner_webhooks_active
+  ON marketplace_partner_webhooks(partner_id, status);
+
+CREATE TABLE IF NOT EXISTS marketplace_webhook_deliveries (
+  delivery_id UUID PRIMARY KEY,
+  subscription_id UUID NOT NULL,
+  partner_id VARCHAR(120) NOT NULL,
+  event_type VARCHAR(80) NOT NULL,
+  payload JSONB NOT NULL,
+  signature VARCHAR(64) NOT NULL,
+  delivered_at TIMESTAMPTZ NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  response_code INTEGER,
+  response_body TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_webhook_deliveries_partner
+  ON marketplace_webhook_deliveries(partner_id, delivered_at DESC);
 
 -- ============================================
 -- PHASE 3 PROJECTIONS (SETTLEMENT)
